@@ -1,0 +1,51 @@
+# ESP32 #2 "Sound + Light Board" — Firmware Brief
+
+Companion firmware to `w17-control-fw` (ESP32 #1) for the 1/10 FPV Mercedes W17 RC car.
+This board consumes the one-way **link2** UART stream from board #1 and produces:
+- **Engine sound** via I2S → MAX98357A → 4Ω 3W speaker (procedural V10-flavored synthesis;
+  a PCM sample player can drop in later behind the same `ISampleSource` seam).
+- **WS2812 lights** (30-LED strip): brake, turn indicators, halo, F1 rain light (flashes
+  while ERS is *harvesting*), low-battery pulse, failsafe hazard.
+
+Input protocol: `docs/link2_protocol.md` (copied from the control repo, which owns it).
+Receiver obligations from that doc are MANDATORY here: hard-reject unsupported length
+bytes immediately, and **no CRC-valid frame for 500 ms ⇒ local failsafe** (engine to
+silence, hazard blink).
+
+## Pin map (this board's own choices — bench-verify)
+See `lib/config/include/config/PinMap.hpp`. UART RX from board #1 = GPIO16 (TX GPIO17
+reserved for the future ack channel); I2S BCLK=26 / LRC=25 / DIN=22 (canonical MAX98357A
+hookup); WS2812 data = GPIO4 via 330Ω. MAX98357A GAIN/SD_MODE strapping notes live in the
+pin header.
+
+## Architecture rules (same house style as w17-control-fw)
+- Pure logic libs under `lib/` with **no Arduino headers**; thin `*_hal_esp32` impls
+  referenced only from `src/main.cpp`; Unity tests in `test/` run on `[env:native]`.
+- Config structs with `constexpr valid()` + `static_assert` at the definition site.
+- Integer math in all control/render paths (float allowed only in one-time table setup).
+- **Cross-core rule:** the ONLY surface shared between the core-1 control loop and the
+  core-0 audio task is the packed `std::atomic<uint32_t>` synth-param word plus the
+  heartbeat atomic. Synth phase state is audio-task-only; VehicleState / enginesim /
+  lights are core-1-only. Do not reach across.
+- The audio task carries a dead-man: params not refreshed for ~500 ms ⇒ volume ramps to 0
+  (a wedged control loop must not leave the engine screaming).
+
+## Module map
+- `lib/link2` — frame codec + assembler, copied VERBATIM from w17-control-fw (do not
+  fork; protocol changes happen there first). `encodeFrame` is kept for the sim feeder.
+- `lib/link2monitor` — staleness watchdog + per-field effective state + LinkStatus
+  (NeverConnected / Up / Lost).
+- `lib/enginesim` — virtual engine: rpm inertia, gear-shift blips, ignition state
+  machine (Off/Cranking/Running), rev limiter, overrun crackle window.
+- `lib/soundsynth` — `ISampleSource` seam + `EngineSynth`: wavetable partial stack at the
+  firing frequency (default 5 firings/rev = V10 flavor, range 3500–15000 rpm — chosen so
+  the fundamental sits in a small speaker's band), per-rev AM, throttle-correlated noise,
+  pitch-tracking ERS whine, param smoothing. Deterministic (seeded LFSR noise).
+- `lib/lights` — pure compositor: base → brake/indicators/rain → low-battery → failsafe
+  hazard override; gamma LUT; brightness cap with a static power budget in `valid()`.
+- `lib/audio_hal_esp32` / `lib/lights_hal_esp32` — legacy IDF i2s driver (stereo-duplicated
+  mono) and Adafruit NeoPixel behind `ILedStrip`.
+
+## Build/test
+`pio test -e native` (all suites incl. a pure end-to-end frames→audio test),
+`pio run -e esp32dev`, `pio run -e esp32dev_sim` (standalone bench demo).

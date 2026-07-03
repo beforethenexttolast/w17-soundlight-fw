@@ -1,0 +1,7 @@
+{
+  "name": "audio_hal_esp32",
+  "version": "0.1.0",
+  "description": "ESP32 (Arduino/IDF 4.4 legacy) I2S output for the MAX98357A. Hardware-only; referenced only from src/main.cpp.",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

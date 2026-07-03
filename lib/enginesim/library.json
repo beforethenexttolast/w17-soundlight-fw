@@ -1,0 +1,10 @@
+{
+  "name": "enginesim",
+  "version": "0.1.0",
+  "description": "Virtual engine model: rpm inertia, shift blips, ignition state machine, rev limiter, overrun crackle. Pure logic.",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {
+    "link2": "*"
+  }
+}

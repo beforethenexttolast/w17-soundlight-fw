@@ -1,0 +1,99 @@
+#pragma once
+
+#include <cstdint>
+
+#include "link2/Link2Frame.hpp"
+#include "link2monitor/Link2Monitor.hpp"
+
+namespace lights {
+
+inline constexpr uint8_t kNumPixels = 30; // WS2812B strip length
+
+struct Rgb {
+    uint8_t r = 0;
+    uint8_t g = 0;
+    uint8_t b = 0;
+    bool operator==(const Rgb& o) const { return r == o.r && g == o.g && b == o.b; }
+};
+
+// A contiguous run of pixels [start, start+len). len 0 = segment absent.
+struct Segment {
+    uint8_t start = 0;
+    uint8_t len = 0;
+};
+
+struct LightConfig {
+    // Strip layout (bench-tune to the physical build). Overlaps are allowed;
+    // the compositor's priority order decides who wins a shared pixel.
+    Segment brake{0, 6};       // rear brake bar
+    Segment rainLight{6, 2};   // F1 rain light (flashes while ERS harvesting)
+    Segment halo{8, 14};       // halo ring
+    Segment leftIndicator{22, 4};
+    Segment rightIndicator{26, 4};
+
+    // Global brightness cap (0..255 scale applied after gamma). Worst case is
+    // the all-amber hazard blink, not normal driving; keep this modest.
+    uint8_t maxBrightness = 110; // ~43%
+
+    // Turn-indicator steering thresholds (normalized -100..100 from the
+    // frame's steeringPercent) with hysteresis + minimum-on so a flick still
+    // completes one blink.
+    int8_t indicatorOnPercent = 40;
+    int8_t indicatorOffPercent = 20;
+
+    // Blink periods (ms). Derived from a free-running clock so segments stay
+    // phase-locked and re-triggering doesn't reset phase.
+    uint16_t indicatorPeriodMs = 660; // ~1.5 Hz
+    uint16_t hazardPeriodMs = 500;    // 2 Hz
+    uint16_t rainPeriodMs = 250;      // ~4 Hz (rapid)
+    uint16_t lowBatteryPeriodMs = 1600;
+
+    // How recently ersPercent must have risen to count as "harvesting".
+    uint16_t harvestWindowMs = 400;
+
+    // Worst-case current budget: every LED at the brightness cap, all three
+    // primaries. WS2812 ~ 20mA/channel at full; scale by cap. Kept well
+    // under the 5A rail; hazard (single amber color) is the real worst case.
+    static constexpr uint32_t kBudgetMilliamps = 900;
+
+    constexpr bool valid() const {
+        // Estimate worst case: all pixels amber (R+G) at the cap.
+        const uint32_t perLedMa = (2u * 20u * maxBrightness) / 255u;
+        return indicatorOnPercent > indicatorOffPercent && maxBrightness > 0 &&
+               indicatorPeriodMs > 0 && hazardPeriodMs > 0 && rainPeriodMs > 0 &&
+               lowBatteryPeriodMs > 0 &&
+               (perLedMa * kNumPixels) <= kBudgetMilliamps;
+    }
+};
+
+// Pure compositor: (effective VehicleState, LinkStatus, nowMs) -> pixels[N].
+// Stateful only for indicator hysteresis + harvest edge detection; time is
+// caller-supplied so blink phase and self-cancel are deterministic in tests.
+//
+// Priority (low to high, later overrides): base (halo + dim tail) ->
+// functional (brake, indicators, rain) -> alert (low-battery halo pulse) ->
+// FAILSAFE hazard (all amber, overrides everything).
+class LightRenderer {
+public:
+    explicit LightRenderer(LightConfig config = LightConfig{});
+
+    void render(const link2::VehicleState& state, link2monitor::LinkStatus link, uint32_t nowMs,
+                Rgb outPixels[kNumPixels]);
+
+private:
+    void fill(Rgb* px, const Segment& seg, Rgb color);
+    bool blinkOn(uint32_t nowMs, uint16_t periodMs) const;
+
+    LightConfig config_;
+
+    // Indicator hysteresis state (left/right latched by steering).
+    bool leftOn_ = false;
+    bool rightOn_ = false;
+
+    // Harvest detection: remember the last ersPercent and when it last rose.
+    uint8_t lastErsPercent_ = 0;
+    uint32_t lastHarvestMs_ = 0;
+    bool harvestSeeded_ = false;
+};
+
+} // namespace lights

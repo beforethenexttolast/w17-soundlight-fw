@@ -1,0 +1,10 @@
+{
+  "name": "link2monitor",
+  "version": "0.1.0",
+  "description": "Link staleness watchdog + per-field effective vehicle state. Pure logic.",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {
+    "link2": "*"
+  }
+}

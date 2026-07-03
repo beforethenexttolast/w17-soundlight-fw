@@ -1,0 +1,7 @@
+{
+  "name": "soundsynth",
+  "version": "0.1.0",
+  "description": "Procedural engine-sound synthesis (wavetable partial stack + ERS whine + noise) behind an ISampleSource seam. Pure integer DSP, no hardware.",
+  "frameworks": "*",
+  "platforms": "*"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "config",
+  "version": "0.1.0",
+  "description": "Header-only pin map for the sound/light board.",
+  "frameworks": "*",
+  "platforms": "*"
+}

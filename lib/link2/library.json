@@ -1,0 +1,10 @@
+{
+  "name": "link2",
+  "version": "0.1.0",
+  "description": "Framed vehicle-state message to the sound/light ESP32 #2. Pure, self-contained (liftable into the board-#2 project wholesale); only Link2Sender touches hal.",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {
+    "hal": "*"
+  }
+}
