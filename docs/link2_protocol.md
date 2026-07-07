@@ -36,11 +36,11 @@ a corrupted 0xFF length would otherwise swallow ~1 s of following frames).
 | 1 | 1 | throttlePercent | int8, −100…+100. **What the ESC is actually commanded** (0 while disarmed or failsafe) — engine sound should track this, not stick position. Negative = braking, **never reverse motion** (the ESC runs forward/brake). |
 | 2 | 1 | steeringPercent | int8, −100…+100. Left/right for turn indicators. Live even while disarmed. |
 | 3 | 1 | flags | bit0 braking (already hysteresis-filtered by the sender — drive the brake light from it directly), bit1 reverse (**reserved, always 0 in v1 — do not key anything off it**), bit2 drsOpen, bit3 armed, bit4 failsafe, bit5 lowBattery, bit6 ersDeploying (boost/overtake actively draining — e.g. an ERS whine sound layer), bit7 reserved (sender writes 0, **receivers must mask, never reject**). |
-| 4 | 1 | gear | 1-based display gear, 1…6. |
+| 4 | 1 | gear | 1-based display gear, 1…4 (matches the firmware gearbox numGears). |
 | 5–6 | 2 | rpm | uint16. **Wheel/axle rpm** (one magnet), plausible max ~5000 — *not* engine rpm; derive engine revs from throttlePercent or scale this. |
 | 7–8 | 2 | batteryMv | uint16, 2S pack millivolts. Display garnish — the `lowBattery` flag is the authoritative judgment (calibrated, 3 s-qualified, hysteresis-latched on board #1). |
 | 9 | 1 | ersPercent | 0…100, ERS energy store. Frozen (not zero) outside ERS mode. |
-| 10 | 1 | driveMode | 0 = Training, 1 = Gearbox, 2 = Gearbox+ERS. Receivers may vary engine character per mode; treat unknown values as 1. |
+| 10 | 1 | driveMode | 0 = TRAINING, 1 = RACE (gearbox), 2 = ERS (gearbox + ERS deploy). Receivers may vary engine character per mode; treat unknown values as 1 (RACE). |
 
 ## State matrix
 
@@ -68,7 +68,7 @@ The byte-identical frame is pinned by `test/test_link2/test_main.cpp`
 ```
 A5 0B 01 2A E7 4C 03 DC 05 DC 1E 3C 02 CE
 │  │  │  │  │  │  │  └─┴─ rpm 1500    └─┴─ battery 7900  │  │  └ crc8
-│  │  │  │  │  │  └ gear 3                               │  └ driveMode 2 (Gearbox+ERS)
+│  │  │  │  │  │  └ gear 3                               │  └ driveMode 2 (ERS)
 │  │  │  │  │  └ flags 0x4C = drsOpen | armed | ersDeploying
 │  │  │  │  └ steeringPercent = 0xE7 = −25                └ ersPercent 60
 │  │  │  └ throttlePercent = 0x2A = +42
@@ -77,4 +77,4 @@ A5 0B 01 2A E7 4C 03 DC 05 DC 1E 3C 02 CE
 └ start
 ```
 Decoded: throttle +42 %, steering −25 %, DRS open, armed, ERS deploying at 60 %
-store in Gearbox+ERS mode, no failsafe, gear 3, wheel 1500 rpm, battery 7.900 V.
+store in ERS mode, no failsafe, gear 3, wheel 1500 rpm, battery 7.900 V.

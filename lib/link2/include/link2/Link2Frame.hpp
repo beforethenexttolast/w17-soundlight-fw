@@ -28,7 +28,7 @@
 //   [5-6] rpm            uint16, WHEEL rpm (not engine rpm)
 //   [7-8] batteryMv      uint16, 2S pack millivolts
 //   [9] ersPercent       0..100, ERS energy store
-//   [10] driveMode       0 = Training, 1 = Gearbox, 2 = Gearbox+ERS
+//   [10] driveMode       0 = TRAINING, 1 = RACE (gearbox), 2 = ERS (gearbox+ERS deploy)
 //
 // Full spec with a worked example: docs/link2_protocol.md.
 
@@ -62,7 +62,7 @@ struct VehicleState {
     uint16_t rpm = 0;
     uint16_t batteryMv = 0;
     uint8_t ersPercent = 100; // store starts full
-    uint8_t driveMode = 1;    // 0 Training / 1 Gearbox / 2 Gearbox+ERS
+    uint8_t driveMode = 1;    // 0 TRAINING / 1 RACE (gearbox) / 2 ERS (gearbox+ERS)
 };
 
 enum class DecodeResult : uint8_t {
