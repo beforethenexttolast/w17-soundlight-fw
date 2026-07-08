@@ -12,6 +12,16 @@ Receiver obligations from that doc are MANDATORY here: hard-reject unsupported l
 bytes immediately, and **no CRC-valid frame for 500 ms ⇒ local failsafe** (engine to
 silence, hazard blink).
 
+## No control authority (non-negotiable)
+This board has **no vehicle control authority**. It must never command steering, ESC/throttle,
+DRS, the gimbal, CRSF, or any vehicle motion. It only **consumes already-arbitrated state**
+from board #1 over the one-way `link2` stream and turns it into sound + light.
+
+**link2 ownership:** the `link2` protocol is owned by `w17-control-fw`. This repo may
+consume and validate its local copy but must **not** fork or casually redefine the protocol;
+any protocol change must be coordinated with `w17-control-fw` (protocol changes happen there
+first, then the codec is copied here verbatim — see the module map).
+
 ## Pin map (this board's own choices — bench-verify)
 See `lib/config/include/config/PinMap.hpp`. UART RX from board #1 = GPIO16 (TX GPIO17
 reserved for the future ack channel); I2S BCLK=26 / LRC=25 / DIN=22 (canonical MAX98357A
