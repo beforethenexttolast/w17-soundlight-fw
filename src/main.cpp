@@ -4,6 +4,7 @@
 
 #include "audio_hal_esp32/Esp32I2sAudio.hpp"
 #include "audiodecision/AudioDecision.hpp"
+#include "audiostartup/AudioStartup.hpp"
 #include "config/PinMap.hpp"
 #include "enginesim/EngineSim.hpp"
 #include "lights/LightRenderer.hpp"
@@ -71,6 +72,53 @@ void audioTask(void*) {
     }
 }
 
+// ---- Audio-device startup adapter (SLR-3) ----
+// Binds the pure audiostartup sequencing to the real IDF / FreeRTOS calls.
+// Each I2S op forwards to the HAL (true only on ESP_OK); createTask maps
+// pdPASS -> true and keeps the audio task parameters byte-for-byte identical to
+// the historical unchecked call. taskResult retains the BaseType_t for the
+// one-shot failure diagnostic. No allocation, no dynamic strings.
+struct AudioStartupOps {
+    BaseType_t taskResult = pdPASS;
+
+    bool installDriver() { return i2s.installDriver(); }
+    bool configurePins() { return i2s.configurePins(); }
+    bool clearDma() { return i2s.clearDma(); }
+    bool createTask() {
+        // Audio pump on core 0 (Arduino loop owns core 1; no WiFi/BT here).
+        taskResult =
+            xTaskCreatePinnedToCore(audioTask, "audio", 4096, nullptr, 5, nullptr, 0);
+        return taskResult == pdPASS;
+    }
+    void uninstallDriver() { i2s.uninstallDriver(); }
+};
+
+// Emit exactly one concise startup diagnostic for a failed audio bring-up
+// (none on success -- the firmware prints nothing on a healthy boot). Includes
+// the underlying esp_err_t / task return code. No dynamic String.
+void reportAudioStartup(audiostartup::AudioStartupResult result, const AudioStartupOps& ops) {
+    switch (result) {
+        case audiostartup::AudioStartupResult::Ready:
+            return;
+        case audiostartup::AudioStartupResult::DriverInstallFailed:
+            Serial.printf("audio disabled: i2s driver install failed (err 0x%x)\n",
+                          static_cast<unsigned>(i2s.lastError()));
+            return;
+        case audiostartup::AudioStartupResult::PinConfigurationFailed:
+            Serial.printf("audio disabled: i2s pin setup failed (err 0x%x)\n",
+                          static_cast<unsigned>(i2s.lastError()));
+            return;
+        case audiostartup::AudioStartupResult::DmaClearFailed:
+            Serial.printf("audio disabled: i2s DMA clear failed (err 0x%x)\n",
+                          static_cast<unsigned>(i2s.lastError()));
+            return;
+        case audiostartup::AudioStartupResult::TaskCreationFailed:
+            Serial.printf("audio disabled: task creation failed (rc %d)\n",
+                          static_cast<int>(ops.taskResult));
+            return;
+    }
+}
+
 uint32_t lastControlMs = 0;
 uint32_t lastLightsMs = 0;
 
@@ -82,11 +130,16 @@ void setup() {
     // link2 in from board #1 on UART2 (RX only; TX reserved for future ack).
     Serial2.begin(115200, SERIAL_8N1, pinmap::kLink2UartRxPin, /*txPin=*/-1);
 
-    i2s.begin();
-    strip.begin();
+    // Audio output startup (SLR-3): drive the I2S bring-up and audio-task
+    // creation through the tested sequencing. On any failure the driver is torn
+    // down best-effort, no audio task exists, audio stays disabled for this
+    // boot, and we emit one diagnostic -- then setup() continues so link2,
+    // EngineSim, and the lights still come up normally.
+    AudioStartupOps audioOps;
+    const audiostartup::AudioStartupResult audioResult = audiostartup::startAudio(audioOps);
+    reportAudioStartup(audioResult, audioOps);
 
-    // Audio pump on core 0 (Arduino loop owns core 1; no WiFi/BT here).
-    xTaskCreatePinnedToCore(audioTask, "audio", 4096, nullptr, 5, nullptr, 0);
+    strip.begin();
 }
 
 void loop() {

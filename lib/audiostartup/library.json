@@ -1,0 +1,7 @@
+{
+  "name": "audiostartup",
+  "version": "0.1.0",
+  "description": "Pure audio-device startup sequencing + cleanup policy (install -> pins -> DMA clear -> task, best-effort uninstall on failure) shared by src/main.cpp and native tests. No hardware, no Arduino/ESP-IDF headers.",
+  "frameworks": "*",
+  "platforms": "*"
+}
