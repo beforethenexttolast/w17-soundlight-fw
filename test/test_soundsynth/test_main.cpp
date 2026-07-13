@@ -9,6 +9,7 @@ using soundsynth::clampToInt16;
 using soundsynth::EngineSynth;
 using soundsynth::EngineSynthConfig;
 using soundsynth::kSampleRateHz;
+using soundsynth::detail::smoothingStepForDelta;
 
 namespace {
 
@@ -397,6 +398,133 @@ void test_boundary_configs_render_safely_and_deterministic() {
     }
 }
 
+// --- Param-smoothing batch (SS-1). The render-path low-pass on rpm/volume
+// used a bare arithmetic (target - smooth) >> 6, which stalls 63 units short
+// for a positive residual of 1..63 (that shifts to 0) while a negative
+// residual of -1..-63 shifts to -1 and still converges. The result was that
+// steady-state loudness depended on command history. detail::smoothingStepForDelta
+// is the production policy: same 1/64 step for every nonzero shifted result,
+// but a minimum one-unit step so a nonzero gap always closes. These tests call
+// the EXACT production helper (never a re-implemented formula). ---
+
+// (1) Step-boundary policy at the audited residual boundaries. Expected values
+// are fixed literals. Confirms: every old nonzero-step result is preserved
+// (including negative non-multiple rounding), positive residuals 1..63 now
+// step +1 instead of 0, zero stays zero, and no step overshoots its residual.
+void test_smoothing_step_boundary_policy() {
+    // Negative side: unchanged from the bare arithmetic shift.
+    TEST_ASSERT_EQUAL_INT32(-2, smoothingStepForDelta(-128));
+    TEST_ASSERT_EQUAL_INT32(-2, smoothingStepForDelta(-127));
+    TEST_ASSERT_EQUAL_INT32(-2, smoothingStepForDelta(-65));
+    TEST_ASSERT_EQUAL_INT32(-1, smoothingStepForDelta(-64));
+    TEST_ASSERT_EQUAL_INT32(-1, smoothingStepForDelta(-63));
+    TEST_ASSERT_EQUAL_INT32(-1, smoothingStepForDelta(-1));
+    // Zero: no movement.
+    TEST_ASSERT_EQUAL_INT32(0, smoothingStepForDelta(0));
+    // Positive side: 1..63 now yield +1 (was 0); 64+ unchanged.
+    TEST_ASSERT_EQUAL_INT32(1, smoothingStepForDelta(1));
+    TEST_ASSERT_EQUAL_INT32(1, smoothingStepForDelta(63));
+    TEST_ASSERT_EQUAL_INT32(1, smoothingStepForDelta(64));
+    TEST_ASSERT_EQUAL_INT32(1, smoothingStepForDelta(65));
+    TEST_ASSERT_EQUAL_INT32(1, smoothingStepForDelta(127));
+    TEST_ASSERT_EQUAL_INT32(2, smoothingStepForDelta(128));
+
+    // No step ever overshoots its own residual (|step| <= |delta|, same sign).
+    for (int32_t d = -300; d <= 300; ++d) {
+        const int32_t step = smoothingStepForDelta(d);
+        if (d == 0) {
+            TEST_ASSERT_EQUAL_INT32(0, step);
+        } else {
+            TEST_ASSERT_TRUE((step > 0) == (d > 0)); // same sign, always moves
+            const int32_t ad0 = d < 0 ? -d : d;
+            const int32_t as0 = step < 0 ? -step : step;
+            TEST_ASSERT_TRUE(as0 <= ad0); // never past the target
+        }
+    }
+}
+
+// (2) Exact convergence: driving the production helper repeatedly from a start
+// to a target reaches the target exactly, never overshoots, and stays put.
+namespace {
+void assertConvergesExactly(int32_t start, int32_t target) {
+    int32_t v = start;
+    const bool fromBelow = start < target;
+    // 1/64 + min-1-unit closes any gap in the value domain well within this.
+    for (int i = 0; i < 100000; ++i) {
+        const int32_t next = v + smoothingStepForDelta(target - v);
+        if (fromBelow) {
+            TEST_ASSERT_TRUE(next <= target); // no overshoot from below
+        } else {
+            TEST_ASSERT_TRUE(next >= target); // no overshoot from above
+        }
+        v = next;
+        if (v == target) break;
+    }
+    TEST_ASSERT_EQUAL_INT32(target, v); // exact arrival within the bound
+    // Once at the target the step is zero: it holds.
+    TEST_ASSERT_EQUAL_INT32(0, smoothingStepForDelta(target - v));
+    TEST_ASSERT_EQUAL_INT32(target, v + smoothingStepForDelta(target - v));
+}
+} // namespace
+
+void test_smoothing_converges_exactly() {
+    assertConvergesExactly(0, 1);
+    assertConvergesExactly(0, 63);   // formerly stalled at 0
+    assertConvergesExactly(0, 70);   // formerly stalled at 7
+    assertConvergesExactly(0, 90);   // formerly stalled at 27
+    assertConvergesExactly(0, 255);  // formerly stalled at 192
+    assertConvergesExactly(255, 90); // from above: already converged pre-fix
+    assertConvergesExactly(255, 0);  // mute path: already converged pre-fix
+    assertConvergesExactly(90, 27);  // from above
+}
+
+// (3) Renderer-level history-independence regression. Two synths with identical
+// config, seed, rpm and flags, rendered the same number of samples, differ only
+// in the volume they were commanded during warm-up. After both are commanded
+// the same final volume and allowed to converge, their output must be byte-
+// identical (steady-state loudness is history-independent). Because volume
+// affects neither the oscillator phase nor the noise LFSR, and both synths see
+// identical rpm/flags for identical sample counts, phase and noise progression
+// stay aligned -- so equal output is exact, not approximate.
+//
+// On the OLD implementation this FAILS: synth A (warmed up commanding 90 from 0)
+// stalls at smoothed volume 27, while synth B (warmed up commanding 255) drops
+// from 192 to exactly 90 -- so their final blocks diverge.
+void test_renderer_volume_history_independent() {
+    EngineSynthConfig cfg; // default (production) config
+    EngineSynth a(cfg, 0x1234u);
+    EngineSynth b(cfg, 0x1234u);
+
+    static int16_t ba[512 * 2];
+    static int16_t bb[512 * 2];
+
+    // Warm-up: identical rpm/flags, DIFFERENT commanded volume.
+    a.setParams(9000, 90, false, false, false);
+    b.setParams(9000, 255, false, false, false);
+    for (int i = 0; i < 16; ++i) { // 16 * 512 = 8192 samples
+        a.render(ba, 512);
+        b.render(bb, 512);
+    }
+
+    // Command the SAME final volume on both and let them converge.
+    a.setParams(9000, 90, false, false, false);
+    b.setParams(9000, 90, false, false, false);
+    for (int i = 0; i < 16; ++i) {
+        a.render(ba, 512);
+        b.render(bb, 512);
+    }
+
+    // Compare a fresh block: must be byte-identical and non-silent.
+    a.render(ba, 512);
+    b.render(bb, 512);
+    bool nonSilent = false;
+    for (int i = 0; i < 512 * 2; ++i) {
+        TEST_ASSERT_EQUAL_INT16(ba[i], bb[i]);
+        if (ba[i] != 0) nonSilent = true;
+    }
+    TEST_ASSERT_TRUE(nonSilent);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_config_valid_and_headroom);
@@ -413,5 +541,8 @@ int main(int, char**) {
     RUN_TEST(test_valid_overrun_extreme_saturates_and_deterministic);
     RUN_TEST(test_valid_high_rpm_extreme_saturates_and_deterministic);
     RUN_TEST(test_boundary_configs_render_safely_and_deterministic);
+    RUN_TEST(test_smoothing_step_boundary_policy);
+    RUN_TEST(test_smoothing_converges_exactly);
+    RUN_TEST(test_renderer_volume_history_independent);
     return UNITY_END();
 }

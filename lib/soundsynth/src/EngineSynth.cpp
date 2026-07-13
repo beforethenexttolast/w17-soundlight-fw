@@ -78,9 +78,12 @@ uint16_t EngineSynth::nextNoise() {
 size_t EngineSynth::render(int16_t* out, size_t frameCount) {
     for (size_t f = 0; f < frameCount; ++f) {
         // --- Per-sample param smoothing (kills zipper on 50 Hz steps). ---
-        // Move ~1/1024 of the gap each sample: ~23 ms time constant.
-        smoothRpm_ += (static_cast<int32_t>(targetRpm_) - smoothRpm_) >> 6;
-        smoothVolume_ += (static_cast<int32_t>(targetVolume_) - smoothVolume_) >> 6;
+        // Apply 1/64 of the remaining gap per sample, with a minimum one-unit
+        // step so the smoothed value converges exactly (see
+        // detail::smoothingStepForDelta). Both sites share the one helper.
+        smoothRpm_ += detail::smoothingStepForDelta(static_cast<int32_t>(targetRpm_) - smoothRpm_);
+        smoothVolume_ +=
+            detail::smoothingStepForDelta(static_cast<int32_t>(targetVolume_) - smoothVolume_);
 
         const uint32_t rpm = smoothRpm_ < 0 ? 0 : static_cast<uint32_t>(smoothRpm_);
         const int32_t vol = smoothVolume_ < 0 ? 0 : smoothVolume_;

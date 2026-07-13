@@ -22,6 +22,28 @@ constexpr int16_t clampToInt16(int32_t sample) {
     return static_cast<int16_t>(sample);
 }
 
+namespace detail {
+
+// Per-sample smoothing step for the render-path low-pass on rpm/volume.
+// Applies 1/64 of the remaining gap (arithmetic >> 6), but with a minimum
+// one-unit step whenever the gap is nonzero, so a smoothed value converges
+// *exactly* instead of stalling. Rationale for the shift-not-divide form:
+// an arithmetic >> 6 rounds a positive residual of 1..63 to 0 (stall) but a
+// negative residual of -1..-63 to -1 (already converges). We keep the exact
+// existing behavior for every nonzero shifted step -- including negative
+// non-multiple rounding, which `/ 64` would change -- and only patch the
+// positive 1..63 zero-step case up to +1. This is deliberately asymmetric:
+// approach-from-above and all larger steps are untouched.
+constexpr int32_t smoothingStepForDelta(int32_t delta) {
+    const int32_t shifted = delta >> 6;
+    if (shifted != 0 || delta == 0) {
+        return shifted;
+    }
+    return delta > 0 ? 1 : -1;
+}
+
+} // namespace detail
+
 // Packed synth parameters, written by the control core and read by the audio
 // core through a single std::atomic<uint32_t> (see EngineSynth::packParams /
 // applyPackedParams). One 32-bit word => torn-free lock-free hand-off.
