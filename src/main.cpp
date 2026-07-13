@@ -3,6 +3,7 @@
 #include <atomic>
 
 #include "audio_hal_esp32/Esp32I2sAudio.hpp"
+#include "audiodecision/AudioDecision.hpp"
 #include "config/PinMap.hpp"
 #include "enginesim/EngineSim.hpp"
 #include "lights/LightRenderer.hpp"
@@ -51,14 +52,6 @@ constexpr uint32_t kControlPeriodMs = 20; // 50Hz
 constexpr uint32_t kLightsPeriodMs = 33;  // ~30Hz
 constexpr uint32_t kAudioDeadmanMs = 500; // control-loop staleness -> mute
 
-// Maps the engine state to a synth volume: silent Off, quiet crank, rising
-// with throttle while Running.
-uint8_t volumeFor(const enginesim::EngineState& e) {
-    if (e.ignition == enginesim::Ignition::Off) return 0;
-    if (e.ignition == enginesim::Ignition::Cranking) return 70;
-    return static_cast<uint8_t>(90 + e.throttlePercent * 165 / 100); // 90..255
-}
-
 // ---- Audio pump: core 0, blocks in i2s.write, self-paced ----
 void audioTask(void*) {
     constexpr size_t kFrames = 256;
@@ -68,7 +61,7 @@ void audioTask(void*) {
         // params regardless of the last packed value.
         const uint32_t now = millis();
         const uint32_t hb = gControlHeartbeatMs.load(std::memory_order_relaxed);
-        if (now - hb > kAudioDeadmanMs) {
+        if (audiodecision::isAudioHeartbeatStale(now, hb, kAudioDeadmanMs)) {
             synth.setParams(0, 0, false, false, false);
         } else {
             synth.applyPackedParams(gSynthParams.load(std::memory_order_relaxed));
@@ -123,8 +116,9 @@ void loop() {
         engine.update(nowMs, monitor.state());
         const enginesim::EngineState& e = engine.engine();
         gSynthParams.store(
-            soundsynth::packParams(e.engineRpm, volumeFor(e), e.ersWhine, e.limiterActive,
-                                   e.overrunActive),
+            soundsynth::packParams(e.engineRpm,
+                                   audiodecision::synthVolumeFor(e.ignition, e.throttlePercent),
+                                   e.ersWhine, e.limiterActive, e.overrunActive),
             std::memory_order_relaxed);
         gControlHeartbeatMs.store(nowMs, std::memory_order_relaxed);
     }

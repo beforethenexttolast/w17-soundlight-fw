@@ -5,6 +5,7 @@
 // here is hardware-free, so this integration path runs on the host and is the
 // cheapest confidence available before the bench.
 
+#include "audiodecision/AudioDecision.hpp"
 #include "enginesim/EngineSim.hpp"
 #include "lights/LightRenderer.hpp"
 #include "link2/Link2Codec.hpp"
@@ -23,12 +24,11 @@ using soundsynth::EngineSynth;
 
 namespace {
 
-// Maps engine rpm -> synth volume the way main.cpp will: quiet at idle,
-// louder with throttle, silent when Off.
+// Volume comes from the production decision (audiodecision::synthVolumeFor),
+// the same function src/main.cpp packs into the synth-param word -- no
+// test-local copy of the mapping or its constants.
 uint8_t volumeFor(const enginesim::EngineState& e) {
-    if (e.ignition == Ignition::Off) return 0;
-    if (e.ignition == Ignition::Cranking) return 60;
-    return static_cast<uint8_t>(80 + e.throttlePercent * 175 / 100); // 80..255
+    return audiodecision::synthVolumeFor(e.ignition, e.throttlePercent);
 }
 
 void feedFrame(Link2Monitor& mon, const VehicleState& s, uint32_t nowMs) {

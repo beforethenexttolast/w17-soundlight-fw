@@ -1,0 +1,10 @@
+{
+  "name": "audiodecision",
+  "version": "0.1.0",
+  "description": "Pure audio-task decisions shared by src/main.cpp and native tests: engine ignition/throttle -> requested synth volume, and control-heartbeat dead-man staleness. No hardware, no Arduino headers.",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {
+    "enginesim": "*"
+  }
+}
