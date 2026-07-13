@@ -110,7 +110,13 @@ size_t EngineSynth::render(int16_t* out, size_t frameCount) {
         if (overrun_ && (nextNoise() & 0x3) == 0) {
             noiseAmp = config_.noiseAmpMax * 3; // crackle burst
         }
-        const int32_t noise = ((static_cast<int32_t>(nextNoise()) - 32768) * noiseAmp) >> 15;
+        // Widen to int64 before the multiply: for valid extreme configs
+        // (e.g. all-noise, noiseAmpMax up to kHeadroomPeak) the rpm- or
+        // overrun-scaled noiseAmp can push (int16-centered sample) * noiseAmp
+        // past int32 and signed-overflow. The arithmetic >> 15 and the int32
+        // result are unchanged -- the shifted magnitude always fits int32.
+        const int32_t noise = static_cast<int32_t>(
+            (static_cast<int64_t>(static_cast<int32_t>(nextNoise()) - 32768) * noiseAmp) >> 15);
         sample += noise;
 
         // --- ERS whine: pitch tracks the firing freq, gated with a ramp. ---

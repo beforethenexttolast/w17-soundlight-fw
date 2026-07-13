@@ -24,6 +24,27 @@ int countUpwardZeroCrossings(const int16_t* buf, size_t frames) {
     return count;
 }
 
+// A valid() config that routes ALL output through the noise multiplication
+// (partials + whine zeroed), so the widened multiply is the only contributor.
+// With noiseAmpMax at the headroom ceiling this is the worst case for the
+// formerly-overflowing signed int32 product, yet peakSum()==noiseAmpMax so
+// valid() still holds -- it is a legal public config, not a weakened one.
+EngineSynthConfig allNoiseConfig(int16_t noiseAmpMax) {
+    EngineSynthConfig cfg;
+    for (int i = 0; i < soundsynth::kMaxPartials; ++i) cfg.partialAmp[i] = 0;
+    cfg.noiseAmpMax = noiseAmpMax;
+    cfg.whineAmp = 0;
+    return cfg;
+}
+
+// Scan an interleaved L/R block, OR-ing in whether either int16 rail was hit.
+void scanRails(const int16_t* buf, size_t samples, bool& sawPos, bool& sawNeg) {
+    for (size_t i = 0; i < samples; ++i) {
+        if (buf[i] == 32767) sawPos = true;
+        if (buf[i] == -32768) sawNeg = true;
+    }
+}
+
 } // namespace
 
 void setUp() {}
@@ -257,6 +278,125 @@ void test_packed_params_roundtrip() {
     TEST_ASSERT_TRUE(peak > 0);
 }
 
+// --- Arithmetic-safety batch: the noise multiplication is now widened to
+// int64 before the >> 15. These drive valid() extreme configs through the REAL
+// render() path (never re-deriving the synthesis formula) to prove the
+// formerly-overflowing product now completes, saturates via the production
+// clamp, and stays deterministic. Strongest when paired with the UBSan harness
+// (run out-of-repo): here they also stand alone as behavioral regressions. ---
+
+// (1) Valid all-noise config at the headroom ceiling, rendered at ~production
+// rpm with the overrun crackle active (noiseAmp = 3 * noiseAmpMax = 90000, well
+// past the pre-fix safe int32 limit). Both rails must be reached and two
+// same-seed instances must agree byte-for-byte.
+void test_valid_overrun_extreme_saturates_and_deterministic() {
+    EngineSynthConfig cfg = allNoiseConfig(EngineSynthConfig::kHeadroomPeak); // 30000
+    TEST_ASSERT_TRUE(cfg.valid());
+    TEST_ASSERT_EQUAL_INT32(EngineSynthConfig::kHeadroomPeak, cfg.peakSum());
+
+    EngineSynth a(cfg, 0xF00Du);
+    EngineSynth b(cfg, 0xF00Du);
+    a.setParams(15000, 255, /*whine=*/false, /*limiter=*/false, /*overrun=*/true);
+    b.setParams(15000, 255, /*whine=*/false, /*limiter=*/false, /*overrun=*/true);
+
+    static int16_t ba[512 * 2];
+    static int16_t bb[512 * 2];
+    bool sawPos = false, sawNeg = false, identical = true;
+    for (int block = 0; block < 80; ++block) {
+        a.render(ba, 512);
+        b.render(bb, 512);
+        scanRails(ba, 512 * 2, sawPos, sawNeg);
+        for (int i = 0; i < 512 * 2; ++i) {
+            if (ba[i] != bb[i]) identical = false;
+        }
+    }
+    TEST_ASSERT_TRUE(sawPos);     // +32767 reached through render()'s clamp
+    TEST_ASSERT_TRUE(sawNeg);     // -32768 reached through render()'s clamp
+    TEST_ASSERT_TRUE(identical);  // same seed + inputs => byte-identical
+}
+
+// (2) Same valid all-noise config, overrun OFF, commanding the max uint16 rpm
+// (65535) at full volume. This exercises the rpm-scaled noiseAmp path
+// (noiseAmp = noiseAmpMax * rpm / 15000), which for a headroom-ceiling config
+// climbs to ~130k -- the widest valid noiseAmp. NOTE: production EngineSim does
+// not emit rpm 65535; this deliberately tests the public EngineSynth
+// input/config contract, not the EngineSim range.
+void test_valid_high_rpm_extreme_saturates_and_deterministic() {
+    EngineSynthConfig cfg = allNoiseConfig(EngineSynthConfig::kHeadroomPeak); // 30000
+    TEST_ASSERT_TRUE(cfg.valid());
+
+    EngineSynth a(cfg, 0x5A5Au);
+    EngineSynth b(cfg, 0x5A5Au);
+    a.setParams(65535, 255, /*whine=*/false, /*limiter=*/false, /*overrun=*/false);
+    b.setParams(65535, 255, /*whine=*/false, /*limiter=*/false, /*overrun=*/false);
+
+    static int16_t ba[1024 * 2];
+    static int16_t bb[1024 * 2];
+    bool sawPos = false, sawNeg = false, identical = true;
+    // ~9 s of audio: ample for the ~23 ms smoother to climb into the high-rpm
+    // regime and for the noise sequence to walk the formerly-overflowing path.
+    for (int block = 0; block < 200; ++block) {
+        a.render(ba, 1024);
+        b.render(bb, 1024);
+        scanRails(ba, 1024 * 2, sawPos, sawNeg);
+        for (int i = 0; i < 1024 * 2; ++i) {
+            if (ba[i] != bb[i]) identical = false;
+        }
+    }
+    TEST_ASSERT_TRUE(sawPos);
+    TEST_ASSERT_TRUE(sawNeg);
+    TEST_ASSERT_TRUE(identical);
+}
+
+// (3) The audited safe/first-overflow boundaries for each amplification path.
+// Pre-fix these straddled the int32 limit (21846 and 15015 overflowed); post-
+// fix all four are valid() and render to completion. Assertions are behavioral
+// (both rails observed + same-seed determinism), never a tautological
+// "within int16 range" check.
+namespace {
+struct BoundaryCase {
+    int16_t noiseAmpMax;
+    bool overrun;
+    uint16_t rpm;
+};
+void runBoundaryCase(const BoundaryCase& c) {
+    EngineSynthConfig cfg = allNoiseConfig(c.noiseAmpMax);
+    TEST_ASSERT_TRUE(cfg.valid());
+
+    EngineSynth a(cfg, 0x2468u);
+    EngineSynth b(cfg, 0x2468u);
+    a.setParams(c.rpm, 255, /*whine=*/false, /*limiter=*/false, c.overrun);
+    b.setParams(c.rpm, 255, /*whine=*/false, /*limiter=*/false, c.overrun);
+
+    static int16_t ba[1024 * 2];
+    static int16_t bb[1024 * 2];
+    bool sawPos = false, sawNeg = false, identical = true;
+    for (int block = 0; block < 200; ++block) {
+        a.render(ba, 1024);
+        b.render(bb, 1024);
+        scanRails(ba, 1024 * 2, sawPos, sawNeg);
+        for (int i = 0; i < 1024 * 2; ++i) {
+            if (ba[i] != bb[i]) identical = false;
+        }
+    }
+    TEST_ASSERT_TRUE(sawPos);
+    TEST_ASSERT_TRUE(sawNeg);
+    TEST_ASSERT_TRUE(identical);
+}
+} // namespace
+
+void test_boundary_configs_render_safely_and_deterministic() {
+    const BoundaryCase cases[] = {
+        {21845, /*overrun=*/true, 15000},  // overrun path: last safe pre-fix
+        {21846, /*overrun=*/true, 15000},  // overrun path: first pre-fix overflow
+        {15014, /*overrun=*/false, 65535}, // high-rpm path: last safe pre-fix
+        {15015, /*overrun=*/false, 65535}, // high-rpm path: first pre-fix overflow
+    };
+    for (const auto& c : cases) {
+        runBoundaryCase(c);
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_config_valid_and_headroom);
@@ -270,5 +410,8 @@ int main(int, char**) {
     RUN_TEST(test_limiter_gates_some_samples_to_zero);
     RUN_TEST(test_deterministic_given_seed);
     RUN_TEST(test_packed_params_roundtrip);
+    RUN_TEST(test_valid_overrun_extreme_saturates_and_deterministic);
+    RUN_TEST(test_valid_high_rpm_extreme_saturates_and_deterministic);
+    RUN_TEST(test_boundary_configs_render_safely_and_deterministic);
     return UNITY_END();
 }
