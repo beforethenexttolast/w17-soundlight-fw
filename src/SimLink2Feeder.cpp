@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 
+#include "BuildConfig.hpp"
 #include "link2/Link2Codec.hpp"
 
 // ~14s looping bench script. Demonstrates: startup (armed), idle, throttle
@@ -85,7 +86,7 @@ size_t tick(uint32_t nowMs, uint8_t* out) {
 
     if (phase != lastPhase) {
         lastPhase = phase;
-        Serial.printf("[sim] phase: %s\n", phase);
+        W17_UART0_PRINTF("[sim] phase: %s\n", phase);
     }
 
     // During DROPOUT emit nothing (the whole point -- exercise staleness).

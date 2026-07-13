@@ -2,6 +2,7 @@
 
 #include <atomic>
 
+#include "BuildConfig.hpp"
 #include "audio_hal_esp32/Esp32I2sAudio.hpp"
 #include "audiodecision/AudioDecision.hpp"
 #include "audiostartup/AudioStartup.hpp"
@@ -80,10 +81,10 @@ void audioTask(void*) {
         if (audiodecision::runtimeActionFor(
                 audiodecision::classifyWrite(wr.status, wr.requestedBytes, wr.bytesWritten)) ==
             audiodecision::AudioRuntimeAction::Disable) {
-            Serial.printf("audio disabled: runtime write fault (err 0x%x, requested %u, wrote %u)\n",
-                          static_cast<unsigned>(wr.status),
-                          static_cast<unsigned>(wr.requestedBytes),
-                          static_cast<unsigned>(wr.bytesWritten));
+            W17_UART0_PRINTF("audio disabled: runtime write fault (err 0x%x, requested %u, wrote %u)\n",
+                             static_cast<unsigned>(wr.status),
+                             static_cast<unsigned>(wr.requestedBytes),
+                             static_cast<unsigned>(wr.bytesWritten));
             vTaskDelete(nullptr); // never returns; no code runs after this
         }
     }
@@ -113,25 +114,26 @@ struct AudioStartupOps {
 // Emit exactly one concise startup diagnostic for a failed audio bring-up
 // (none on success -- the firmware prints nothing on a healthy boot). Includes
 // the underlying esp_err_t / task return code. No dynamic String.
-void reportAudioStartup(audiostartup::AudioStartupResult result, const AudioStartupOps& ops) {
+void reportAudioStartup(audiostartup::AudioStartupResult result,
+                        [[maybe_unused]] const AudioStartupOps& ops) {
     switch (result) {
         case audiostartup::AudioStartupResult::Ready:
             return;
         case audiostartup::AudioStartupResult::DriverInstallFailed:
-            Serial.printf("audio disabled: i2s driver install failed (err 0x%x)\n",
-                          static_cast<unsigned>(i2s.lastError()));
+            W17_UART0_PRINTF("audio disabled: i2s driver install failed (err 0x%x)\n",
+                             static_cast<unsigned>(i2s.lastError()));
             return;
         case audiostartup::AudioStartupResult::PinConfigurationFailed:
-            Serial.printf("audio disabled: i2s pin setup failed (err 0x%x)\n",
-                          static_cast<unsigned>(i2s.lastError()));
+            W17_UART0_PRINTF("audio disabled: i2s pin setup failed (err 0x%x)\n",
+                             static_cast<unsigned>(i2s.lastError()));
             return;
         case audiostartup::AudioStartupResult::DmaClearFailed:
-            Serial.printf("audio disabled: i2s DMA clear failed (err 0x%x)\n",
-                          static_cast<unsigned>(i2s.lastError()));
+            W17_UART0_PRINTF("audio disabled: i2s DMA clear failed (err 0x%x)\n",
+                             static_cast<unsigned>(i2s.lastError()));
             return;
         case audiostartup::AudioStartupResult::TaskCreationFailed:
-            Serial.printf("audio disabled: task creation failed (rc %d)\n",
-                          static_cast<int>(ops.taskResult));
+            W17_UART0_PRINTF("audio disabled: task creation failed (rc %d)\n",
+                             static_cast<int>(ops.taskResult));
             return;
     }
 }
@@ -142,7 +144,11 @@ uint32_t lastLightsMs = 0;
 } // namespace
 
 void setup() {
+#if W17_UART0_DIAGNOSTICS
+    // Application UART0 for diagnostics only; compiled out of the delivery
+    // build (finding SL-3). ROM/bootloader output on UART0 is outside this gate.
     Serial.begin(115200);
+#endif
 
     // link2 in from board #1 on UART2 (RX only; TX reserved for future ack).
     Serial2.begin(115200, SERIAL_8N1, pinmap::kLink2UartRxPin, /*txPin=*/-1);
