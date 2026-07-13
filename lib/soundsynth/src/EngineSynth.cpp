@@ -138,10 +138,8 @@ size_t EngineSynth::render(int16_t* out, size_t frameCount) {
             }
         }
 
-        if (sample > 32767) sample = 32767;
-        if (sample < -32768) sample = -32768;
-
-        const int16_t s16 = static_cast<int16_t>(sample);
+        // Single authoritative saturating narrow to int16 (see clampToInt16).
+        const int16_t s16 = clampToInt16(sample);
         out[2 * f] = s16;     // L
         out[2 * f + 1] = s16; // R (duplicated: mono engine, stereo transport)
         sampleCounter_++;

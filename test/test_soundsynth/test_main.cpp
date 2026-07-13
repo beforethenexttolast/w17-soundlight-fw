@@ -1,9 +1,11 @@
 #include <unity.h>
 
 #include <cmath>
+#include <cstdint>
 
 #include "soundsynth/EngineSynth.hpp"
 
+using soundsynth::clampToInt16;
 using soundsynth::EngineSynth;
 using soundsynth::EngineSynthConfig;
 using soundsynth::kSampleRateHz;
@@ -99,18 +101,102 @@ void test_zero_volume_is_silent() {
     }
 }
 
-void test_never_clips_at_max_settings() {
-    EngineSynth synth;
+// Direct test of the production clamp helper (clampToInt16). The render path
+// calls this exact function (see test_render_path_saturates_via_clamp), so
+// these boundaries pin the real int16 clip policy. Expected values are fixed
+// literals / standard limits -- never computed by another clamp. This fails if
+// the clamp is removed, reversed, or given the wrong limits.
+void test_clamp_to_int16_boundaries() {
+    // Around zero and small in-range values.
+    TEST_ASSERT_EQUAL_INT16(0, clampToInt16(0));
+    TEST_ASSERT_EQUAL_INT16(1, clampToInt16(1));
+    TEST_ASSERT_EQUAL_INT16(-1, clampToInt16(-1));
+
+    // Representative in-range values (well inside both rails).
+    TEST_ASSERT_EQUAL_INT16(12345, clampToInt16(12345));
+    TEST_ASSERT_EQUAL_INT16(-12345, clampToInt16(-12345));
+
+    // Positive rail: pass through up to 32767, saturate strictly above it.
+    TEST_ASSERT_EQUAL_INT16(32766, clampToInt16(32766));
+    TEST_ASSERT_EQUAL_INT16(32767, clampToInt16(32767));
+    TEST_ASSERT_EQUAL_INT16(32767, clampToInt16(32768));
+    TEST_ASSERT_EQUAL_INT16(32767, clampToInt16(32769));
+    TEST_ASSERT_EQUAL_INT16(32767, clampToInt16(2000000000));
+    TEST_ASSERT_EQUAL_INT16(32767, clampToInt16(INT32_MAX));
+
+    // Negative rail: pass through down to -32768, saturate strictly below it.
+    // Note -32768 is a LEGAL sample (asymmetry vs +32767) and must not clamp.
+    TEST_ASSERT_EQUAL_INT16(-32767, clampToInt16(-32767));
+    TEST_ASSERT_EQUAL_INT16(-32768, clampToInt16(-32768));
+    TEST_ASSERT_EQUAL_INT16(-32768, clampToInt16(-32769));
+    TEST_ASSERT_EQUAL_INT16(-32768, clampToInt16(-32770));
+    TEST_ASSERT_EQUAL_INT16(-32768, clampToInt16(-2000000000));
+    TEST_ASSERT_EQUAL_INT16(-32768, clampToInt16(INT32_MIN));
+
+    // Prove the rails are intentionally asymmetric: |min| = |max| + 1.
+    TEST_ASSERT_EQUAL_INT16(32767, clampToInt16(INT32_MAX));
+    TEST_ASSERT_EQUAL_INT16(-32768, clampToInt16(INT32_MIN));
+    TEST_ASSERT_NOT_EQUAL(-clampToInt16(INT32_MAX), clampToInt16(INT32_MIN));
+}
+
+// Proves the production render path actually routes through clampToInt16. The
+// default (production) config never clips (see test_headroom_...), so drive a
+// still-valid() config whose overrun crackle burst (3x noiseAmpMax) legally
+// exceeds the int16 rails, and assert the real renderer saturates to the exact
+// clamp limits on BOTH signs. peakSum() stays within the headroom budget so
+// valid() is not weakened; the burst is genuine production DSP that the
+// steady-state headroom budget does not cover. No overflow: the widest noise
+// product is 32768 * (3 * 14000) ~= 1.38e9 < INT32_MAX.
+void test_render_path_saturates_via_clamp() {
+    EngineSynthConfig cfg;
+    for (int i = 0; i < soundsynth::kMaxPartials; ++i) cfg.partialAmp[i] = 0;
+    cfg.partialAmp[0] = 8000;
+    cfg.noiseAmpMax = 14000;
+    cfg.whineAmp = 0;
+    TEST_ASSERT_TRUE(cfg.valid()); // not weakened; peakSum == 22000 <= headroom
+    TEST_ASSERT_TRUE(cfg.peakSum() <= EngineSynthConfig::kHeadroomPeak);
+
+    EngineSynth synth(cfg, 0x1234u);
+    synth.setParams(15000, 255, /*whine=*/false, /*limiter=*/false, /*overrun=*/true);
+    static int16_t buf[256 * 2];
+    bool sawPosRail = false;
+    bool sawNegRail = false;
+    for (int block = 0; block < 60 && !(sawPosRail && sawNegRail); ++block) {
+        synth.render(buf, 256);
+        for (int i = 0; i < 256 * 2; ++i) {
+            // A sample only reaches exactly a rail because the clamp pinned an
+            // out-of-range accumulator there -- proving render() calls it.
+            if (buf[i] == 32767) sawPosRail = true;
+            if (buf[i] == -32768) sawNegRail = true;
+        }
+    }
+    TEST_ASSERT_TRUE(sawPosRail); // positive saturation observed via render()
+    TEST_ASSERT_TRUE(sawNegRail); // negative saturation observed via render()
+}
+
+// Replaces the former vacuous "never clips" test (which asserted an int16 lay
+// within int16 range -- always true). The real contract at MAX production
+// settings is a headroom one: the default config is deliberately scaled so the
+// mixed output stays under the documented kHeadroomPeak budget and never
+// reaches the int16 rails. The bound is the independent design constant, not a
+// value recomputed from the renderer. Would fail if partial/noise/whine amps
+// were bumped past the headroom budget.
+void test_headroom_holds_below_rail_at_max_settings() {
+    EngineSynth synth; // default (production) config
     synth.setParams(15000, 255, /*whine=*/true, /*limiter=*/false, /*overrun=*/true);
     static int16_t buf[1024 * 2];
+    int32_t peak = 0;
     for (int block = 0; block < 200; ++block) {
         synth.render(buf, 1024);
         for (int i = 0; i < 1024 * 2; ++i) {
-            // int16 range is guaranteed by the clamp; assert we never hit the
-            // hard rails hard (headroom held), i.e. stays within full scale.
-            TEST_ASSERT_TRUE(buf[i] >= -32768 && buf[i] <= 32767);
+            const int32_t a = buf[i] < 0 ? -static_cast<int32_t>(buf[i])
+                                         : static_cast<int32_t>(buf[i]);
+            if (a > peak) peak = a;
         }
     }
+    TEST_ASSERT_TRUE(peak > 0);                                   // signal present
+    TEST_ASSERT_TRUE(peak <= EngineSynthConfig::kHeadroomPeak);   // within budget
+    TEST_ASSERT_TRUE(peak < 32767);                              // never touches the rail
 }
 
 void test_stereo_channels_identical() {
@@ -177,7 +263,9 @@ int main(int, char**) {
     RUN_TEST(test_pitch_matches_firing_frequency);
     RUN_TEST(test_volume_scales_amplitude);
     RUN_TEST(test_zero_volume_is_silent);
-    RUN_TEST(test_never_clips_at_max_settings);
+    RUN_TEST(test_clamp_to_int16_boundaries);
+    RUN_TEST(test_render_path_saturates_via_clamp);
+    RUN_TEST(test_headroom_holds_below_rail_at_max_settings);
     RUN_TEST(test_stereo_channels_identical);
     RUN_TEST(test_limiter_gates_some_samples_to_zero);
     RUN_TEST(test_deterministic_given_seed);

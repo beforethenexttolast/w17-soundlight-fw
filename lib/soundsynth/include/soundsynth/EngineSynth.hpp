@@ -9,6 +9,19 @@ namespace soundsynth {
 inline constexpr uint32_t kSampleRateHz = 22050;
 inline constexpr int kMaxPartials = 8;
 
+// The single authoritative int16 clip policy for the render path. render()
+// mixes into a 32-bit accumulator and calls this as the final saturating
+// narrowing to the int16 sample transport. Kept as a public constexpr helper
+// (no Arduino/ESP32 dependency, no allocation) so tests exercise the *exact*
+// production clamp through the normal library include path rather than a copy.
+// The limits are intentionally asymmetric: a two's-complement int16 covers
+// [-32768, 32767], so -32768 is a legal sample and must survive unclamped.
+constexpr int16_t clampToInt16(int32_t sample) {
+    if (sample > 32767) sample = 32767;
+    if (sample < -32768) sample = -32768;
+    return static_cast<int16_t>(sample);
+}
+
 // Packed synth parameters, written by the control core and read by the audio
 // core through a single std::atomic<uint32_t> (see EngineSynth::packParams /
 // applyPackedParams). One 32-bit word => torn-free lock-free hand-off.
