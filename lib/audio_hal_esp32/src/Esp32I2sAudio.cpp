@@ -62,11 +62,12 @@ void Esp32I2sAudio::uninstallDriver() {
     i2s_driver_uninstall(kPort);
 }
 
-size_t Esp32I2sAudio::write(const int16_t* stereoFrames, size_t frameCount) {
+WriteResult Esp32I2sAudio::write(const int16_t* stereoFrames, size_t frameCount) {
+    const size_t requestedBytes = frameCount * 2 * sizeof(int16_t);
     size_t bytesWritten = 0;
-    const size_t bytes = frameCount * 2 * sizeof(int16_t);
-    i2s_write(kPort, stereoFrames, bytes, &bytesWritten, portMAX_DELAY);
-    return bytesWritten / (2 * sizeof(int16_t));
+    const esp_err_t status =
+        i2s_write(kPort, stereoFrames, requestedBytes, &bytesWritten, portMAX_DELAY);
+    return WriteResult{static_cast<int32_t>(status), requestedBytes, bytesWritten};
 }
 
 } // namespace audio_hal_esp32

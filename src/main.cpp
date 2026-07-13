@@ -68,7 +68,24 @@ void audioTask(void*) {
             synth.applyPackedParams(gSynthParams.load(std::memory_order_relaxed));
         }
         synth.render(buf, kFrames);
-        i2s.write(buf, kFrames);
+
+        // Runtime I2S write handling (SLR-4). A completed write that reports a
+        // non-success status, or success with a byte count other than the 1024
+        // requested, permanently disables audio for this boot: emit exactly one
+        // diagnostic and delete this task. No retry, no driver uninstall, no
+        // reset -- the task's non-existence IS the audio-disabled state, and
+        // link2/EngineSim/lights/failsafe on core 1 keep running. This does NOT
+        // detect an i2s_write that blocks forever under portMAX_DELAY.
+        const audio_hal_esp32::WriteResult wr = i2s.write(buf, kFrames);
+        if (audiodecision::runtimeActionFor(
+                audiodecision::classifyWrite(wr.status, wr.requestedBytes, wr.bytesWritten)) ==
+            audiodecision::AudioRuntimeAction::Disable) {
+            Serial.printf("audio disabled: runtime write fault (err 0x%x, requested %u, wrote %u)\n",
+                          static_cast<unsigned>(wr.status),
+                          static_cast<unsigned>(wr.requestedBytes),
+                          static_cast<unsigned>(wr.bytesWritten));
+            vTaskDelete(nullptr); // never returns; no code runs after this
+        }
     }
 }
 

@@ -10,9 +10,23 @@
 #include "audiodecision/AudioDecision.hpp"
 #include "enginesim/EngineSim.hpp"
 
+using audiodecision::AudioRuntimeAction;
+using audiodecision::classifyWrite;
 using audiodecision::isAudioHeartbeatStale;
+using audiodecision::runtimeActionFor;
 using audiodecision::synthVolumeFor;
+using audiodecision::WriteOutcome;
 using enginesim::Ignition;
+
+// The production runtime write requests 1024 bytes (256 frames * 2 ch * 2 B).
+// Fixed here as a literal so the classification tests never recompute it.
+static constexpr size_t kRequestedBytes = 1024;
+
+// A representative non-success esp_err_t. This is the verified numeric value of
+// ESP_ERR_INVALID_ARG (0x102) in the installed Arduino-ESP32 framework, fixed
+// as a plain literal so no ESP-IDF header is imported. The exact value is
+// immaterial to the classifier: it treats EVERY nonzero status as a failure.
+static constexpr int32_t kNonSuccessStatus = 0x102;
 
 void setUp() {}
 void tearDown() {}
@@ -102,6 +116,117 @@ void test_deadman_recovery() {
     TEST_ASSERT_FALSE(isAudioHeartbeatStale(2000u, 2000u, 500u));
 }
 
+// ---- Runtime write classification (SLR-4) ---------------------------------
+// classifyWrite: status dominates; only exact requested==written with a zero
+// status is Complete. Expected outcomes are explicit enum literals.
+
+// Zero status, full 1024 bytes queued -> Complete.
+void test_classify_success_full_write_is_complete() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::Complete),
+                          static_cast<int>(classifyWrite(0, kRequestedBytes, 1024)));
+}
+
+// Zero status but fewer/zero/more bytes than requested -> ShortWrite.
+void test_classify_success_zero_bytes_is_short_write() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::ShortWrite),
+                          static_cast<int>(classifyWrite(0, kRequestedBytes, 0)));
+}
+
+void test_classify_success_half_bytes_is_short_write() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::ShortWrite),
+                          static_cast<int>(classifyWrite(0, kRequestedBytes, 512)));
+}
+
+void test_classify_success_over_bytes_is_short_write() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::ShortWrite),
+                          static_cast<int>(classifyWrite(0, kRequestedBytes, 2048)));
+}
+
+// Non-success status -> DriverError regardless of byte count (status dominates),
+// including when the byte count would otherwise look Complete or ShortWrite.
+void test_classify_error_zero_bytes_is_driver_error() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::DriverError),
+                          static_cast<int>(classifyWrite(kNonSuccessStatus, kRequestedBytes, 0)));
+}
+
+void test_classify_error_half_bytes_is_driver_error() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::DriverError),
+                          static_cast<int>(classifyWrite(kNonSuccessStatus, kRequestedBytes, 512)));
+}
+
+void test_classify_error_full_bytes_is_driver_error() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::DriverError),
+                          static_cast<int>(classifyWrite(kNonSuccessStatus, kRequestedBytes, 1024)));
+}
+
+// Defensive zero-request coverage (pure-function; production never writes 0 B):
+// 0 requested / 0 written / success is an exact match -> Complete.
+void test_classify_zero_request_zero_written_is_complete() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::Complete),
+                          static_cast<int>(classifyWrite(0, 0, 0)));
+}
+
+// 0 requested but a nonzero count reported -> ShortWrite.
+void test_classify_zero_request_nonzero_written_is_short_write() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::ShortWrite),
+                          static_cast<int>(classifyWrite(0, 0, 4)));
+}
+
+// ---- Runtime action mapping (SLR-4) ---------------------------------------
+
+void test_action_complete_continues() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioRuntimeAction::Continue),
+                          static_cast<int>(runtimeActionFor(WriteOutcome::Complete)));
+}
+
+void test_action_short_write_disables() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioRuntimeAction::Disable),
+                          static_cast<int>(runtimeActionFor(WriteOutcome::ShortWrite)));
+}
+
+void test_action_driver_error_disables() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioRuntimeAction::Disable),
+                          static_cast<int>(runtimeActionFor(WriteOutcome::DriverError)));
+}
+
+// ---- Policy properties (SLR-4) --------------------------------------------
+
+// Every non-Complete outcome maps to Disable; Complete is the only Continue.
+void test_policy_only_complete_continues() {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioRuntimeAction::Continue),
+                          static_cast<int>(runtimeActionFor(WriteOutcome::Complete)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioRuntimeAction::Disable),
+                          static_cast<int>(runtimeActionFor(WriteOutcome::ShortWrite)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioRuntimeAction::Disable),
+                          static_cast<int>(runtimeActionFor(WriteOutcome::DriverError)));
+}
+
+// The decision is a pure function: identical inputs give identical results, and
+// there is no hidden counter/backoff that changes the verdict on repetition.
+void test_policy_repeated_inputs_are_stable() {
+    for (int i = 0; i < 5; ++i) {
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::Complete),
+                              static_cast<int>(classifyWrite(0, kRequestedBytes, 1024)));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::DriverError),
+                              static_cast<int>(classifyWrite(kNonSuccessStatus, kRequestedBytes, 1024)));
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioRuntimeAction::Disable),
+                              static_cast<int>(runtimeActionFor(WriteOutcome::DriverError)));
+    }
+}
+
+// Status dominates the byte count: a non-success status with a byte count that
+// would otherwise be Complete still classifies (and disables) as DriverError.
+void test_policy_status_dominates_byte_count() {
+    const WriteOutcome errWouldBeComplete = classifyWrite(kNonSuccessStatus, kRequestedBytes, 1024);
+    const WriteOutcome okShort = classifyWrite(0, kRequestedBytes, 1024 - 4);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::DriverError),
+                          static_cast<int>(errWouldBeComplete));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AudioRuntimeAction::Disable),
+                          static_cast<int>(runtimeActionFor(errWouldBeComplete)));
+    // Contrast: same byte-mismatch but a success status is only a ShortWrite.
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::ShortWrite), static_cast<int>(okShort));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_volume_off_is_silent);
@@ -116,5 +241,20 @@ int main(int, char**) {
     RUN_TEST(test_deadman_boundary_499_500_501);
     RUN_TEST(test_deadman_uint32_wraparound);
     RUN_TEST(test_deadman_recovery);
+    RUN_TEST(test_classify_success_full_write_is_complete);
+    RUN_TEST(test_classify_success_zero_bytes_is_short_write);
+    RUN_TEST(test_classify_success_half_bytes_is_short_write);
+    RUN_TEST(test_classify_success_over_bytes_is_short_write);
+    RUN_TEST(test_classify_error_zero_bytes_is_driver_error);
+    RUN_TEST(test_classify_error_half_bytes_is_driver_error);
+    RUN_TEST(test_classify_error_full_bytes_is_driver_error);
+    RUN_TEST(test_classify_zero_request_zero_written_is_complete);
+    RUN_TEST(test_classify_zero_request_nonzero_written_is_short_write);
+    RUN_TEST(test_action_complete_continues);
+    RUN_TEST(test_action_short_write_disables);
+    RUN_TEST(test_action_driver_error_disables);
+    RUN_TEST(test_policy_only_complete_continues);
+    RUN_TEST(test_policy_repeated_inputs_are_stable);
+    RUN_TEST(test_policy_status_dominates_byte_count);
     return UNITY_END();
 }
