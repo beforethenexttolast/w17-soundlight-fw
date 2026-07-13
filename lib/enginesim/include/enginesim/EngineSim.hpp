@@ -90,10 +90,16 @@ private:
     uint8_t lastGear_ = 1;
     bool everSeenState_ = false;
 
-    uint32_t blipUntilMs_ = 0;
+    // Event windows are tracked as (start timestamp + explicit active flag),
+    // tested with wrap-safe unsigned elapsed arithmetic. The boolean is the
+    // authoritative "inactive" state: timestamp 0 is a valid event start (boot
+    // time) and must not double as a sentinel.
+    uint32_t blipStartMs_ = 0;
+    bool blipActive_ = false;
     int16_t blipRpm_ = 0; // signed offset applied while blipping
 
-    uint32_t overrunUntilMs_ = 0;
+    uint32_t overrunStartMs_ = 0;
+    bool overrunActive_ = false;
     uint16_t wobblePhase_ = 0;
 };
 

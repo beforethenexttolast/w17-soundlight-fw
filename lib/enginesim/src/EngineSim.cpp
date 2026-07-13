@@ -48,10 +48,12 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
     if (everSeenState_ && ignition_ == Ignition::Running && !state.failsafe) {
         if (state.gear > lastGear_) {
             blipRpm_ = -static_cast<int16_t>(config_.shiftBlipRpm); // upshift dip
-            blipUntilMs_ = nowMs + config_.blipMs;
+            blipStartMs_ = nowMs;
+            blipActive_ = true;
         } else if (state.gear < lastGear_) {
             blipRpm_ = static_cast<int16_t>(config_.shiftBlipRpm); // downshift blip
-            blipUntilMs_ = nowMs + config_.blipMs;
+            blipStartMs_ = nowMs;
+            blipActive_ = true;
         }
     }
 
@@ -62,7 +64,8 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
                                         (config_.maxRpm - config_.idleRpm) *
                                             config_.overrunHighRpmPct / 100;
         if (drop >= config_.overrunThrottleDrop && wasHigh) {
-            overrunUntilMs_ = nowMs + config_.overrunMs;
+            overrunStartMs_ = nowMs;
+            overrunActive_ = true;
         }
     }
 
@@ -117,8 +120,15 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
     }
 
     out_.limiterActive = false;
-    if (nowMs < blipUntilMs_) {
-        audible += blipRpm_;
+    // Wrap-safe blip window: active while elapsed < blipMs (exclusive at the
+    // end, matching the old `nowMs < start + blipMs`). Clear the flag on expiry
+    // so the elapsed value can never wrap back below blipMs and phantom-reopen.
+    if (blipActive_) {
+        if (static_cast<uint32_t>(nowMs - blipStartMs_) < config_.blipMs) {
+            audible += blipRpm_;
+        } else {
+            blipActive_ = false;
+        }
     }
     if (ignition_ == Ignition::Running && state.throttlePercent >= 95 &&
         rpm_ >= config_.maxRpm - config_.limiterBandRpm) {
@@ -131,7 +141,13 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
     out_.engineRpm = static_cast<uint16_t>(audible);
     out_.throttlePercent = lastThrottle_;
     out_.ignition = ignition_;
-    out_.overrunActive = nowMs < overrunUntilMs_ && ignition_ == Ignition::Running;
+    // Wrap-safe overrun window: active while elapsed < overrunMs (exclusive at
+    // the end, matching the old `nowMs < start + overrunMs`). Clear on expiry so
+    // elapsed cannot wrap back below overrunMs and phantom-reopen.
+    if (overrunActive_ && static_cast<uint32_t>(nowMs - overrunStartMs_) >= config_.overrunMs) {
+        overrunActive_ = false;
+    }
+    out_.overrunActive = overrunActive_ && ignition_ == Ignition::Running;
     out_.ersWhine = state.ersDeploying;
 }
 
