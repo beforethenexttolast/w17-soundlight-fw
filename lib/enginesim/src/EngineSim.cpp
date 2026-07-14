@@ -3,8 +3,7 @@
 namespace enginesim {
 
 namespace {
-constexpr uint32_t kInertiaScale = 1000; // rate is per-mille per ms
-constexpr uint32_t kMaxDtMs = 100;       // stall clamp, same idea as ERS
+constexpr uint32_t kMaxDtMs = 100; // stall clamp, same idea as ERS
 } // namespace
 
 EngineSim::EngineSim(EngineSimConfig config) : config_(config) {
@@ -85,7 +84,7 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
 
     const int32_t gap = target - rpm_;
     const uint16_t rate = (gap >= 0) ? config_.revUpPerMille : config_.revDownPerMille;
-    rpm_ += gap * static_cast<int32_t>(rate) * static_cast<int32_t>(dtMs) / kInertiaScale;
+    rpm_ += inertiaStep(gap, rate, dtMs);
     // Guard against overshoot leaving a residual that never settles.
     if ((gap >= 0 && rpm_ > target) || (gap < 0 && rpm_ < target)) {
         rpm_ = target;

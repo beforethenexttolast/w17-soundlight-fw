@@ -73,7 +73,24 @@ public:
 
     const EngineState& engine() const { return out_; }
 
+    // Signed RPM-inertia step: how far to move rpm toward the target this tick,
+    // given the remaining `gap` (= target - rpm), the per-mille-of-gap-per-ms
+    // `ratePerMille`, and the elapsed `dtMs`. Widened to int64 BEFORE the
+    // multiply so the product cannot overflow for any EngineSimConfig::valid()
+    // config, then divided (not shifted) by the 1000 per-mille scale. C++ signed
+    // integer division truncates toward zero, so a negative gap (rev-down) yields
+    // a negative step rather than the unsigned-conversion blow-up of dividing a
+    // signed numerator by an unsigned scale. Returns the delta to add to rpm; it
+    // fits int32 for every valid() config (see bounds proof in the tests).
+    static constexpr int32_t inertiaStep(int32_t gap, uint16_t ratePerMille, uint32_t dtMs) {
+        return static_cast<int32_t>(static_cast<int64_t>(gap) *
+                                    static_cast<int64_t>(ratePerMille) *
+                                    static_cast<int64_t>(dtMs) / kInertiaScale);
+    }
+
 private:
+    static constexpr int64_t kInertiaScale = 1000; // rate is per-mille per ms
+
     uint16_t targetRpm(const link2::VehicleState& state) const;
 
     EngineSimConfig config_;
