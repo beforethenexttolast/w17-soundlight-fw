@@ -61,7 +61,9 @@ struct LightConfig {
         const uint32_t perLedMa = (2u * 20u * maxBrightness) / 255u;
         return indicatorOnPercent > indicatorOffPercent && maxBrightness > 0 &&
                indicatorPeriodMs > 0 && hazardPeriodMs > 0 && rainPeriodMs > 0 &&
-               lowBatteryPeriodMs > 0 &&
+               // >= 2 so the pulse half-period (period / 2) is never 0 -- the
+               // renderer divides the triangle by it (LightRenderer.cpp).
+               lowBatteryPeriodMs >= 2 &&
                (perLedMa * kNumPixels) <= kBudgetMilliamps;
     }
 };

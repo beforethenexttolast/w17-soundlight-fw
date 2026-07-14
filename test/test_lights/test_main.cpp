@@ -168,6 +168,64 @@ void test_halo_teal_armed_dim_when_disarmed() {
     TEST_ASSERT_TRUE(anyNonBlack(px)); // halo dim-white, not black
 }
 
+// Pins the low-battery period contract: the renderer's pulse half-period is
+// period/2, so period 0 or 1 (half == 0) would divide by zero. valid() must
+// reject anything below 2; the smallest meaningful pulse is period 2.
+void test_low_battery_period_validation_boundary() {
+    LightConfig c; // otherwise-valid defaults; only vary the period.
+    c.lowBatteryPeriodMs = 0;
+    TEST_ASSERT_FALSE(c.valid());
+    c.lowBatteryPeriodMs = 1;
+    TEST_ASSERT_FALSE(c.valid()); // fails on committed HEAD (1 used to pass)
+    c.lowBatteryPeriodMs = 2;
+    TEST_ASSERT_TRUE(c.valid());
+    c.lowBatteryPeriodMs = 3;
+    TEST_ASSERT_TRUE(c.valid());
+    // The production/default value stays valid.
+    TEST_ASSERT_TRUE(LightConfig{}.valid());
+}
+
+// At the minimum valid period (2), the low-battery pulse must render cleanly
+// (no divide-by-zero, in-range bytes, deterministic) and still change the halo
+// versus the non-low-battery state.
+void test_low_battery_min_valid_period_renders() {
+    LightConfig c;
+    c.lowBatteryPeriodMs = 2;
+    TEST_ASSERT_TRUE(c.valid());
+
+    LightRenderer r(c);
+    Rgb px[kNumPixels];
+
+    VehicleState low = upState();
+    low.lowBattery = true;
+
+    // Exercise both phases (phase 0 -> tri 0; phase 1 -> the period-phase half).
+    for (uint32_t t = 0; t < 8; ++t) {
+        r.render(low, light_status::Up, t, px);
+        for (uint8_t i = 0; i < kNumPixels; ++i) {
+            // Bytes are inherently within range; assert stays a live check.
+            TEST_ASSERT_TRUE(px[i].r <= 255 && px[i].g <= 255 && px[i].b <= 255);
+        }
+    }
+
+    // Determinism: same inputs -> same pixels.
+    Rgb a[kNumPixels];
+    Rgb b[kNumPixels];
+    r.render(low, light_status::Up, 1, a);
+    r.render(low, light_status::Up, 1, b);
+    for (uint8_t i = 0; i < kNumPixels; ++i) {
+        TEST_ASSERT_TRUE(a[i] == b[i]);
+    }
+
+    // The low-battery pulse recolors the halo versus the non-low state.
+    Rgb normalPx[kNumPixels];
+    VehicleState normal = upState(); // lowBattery = false
+    r.render(normal, light_status::Up, 1, normalPx);
+    const Rgb haloLow = segFirst(a, cfg.halo);
+    const Rgb haloNormal = segFirst(normalPx, cfg.halo);
+    TEST_ASSERT_FALSE(haloLow == haloNormal);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_config_valid_and_within_power_budget);
@@ -179,5 +237,7 @@ int main(int, char**) {
     RUN_TEST(test_rain_light_flashes_only_while_harvesting_in_ers_mode);
     RUN_TEST(test_rain_light_ignores_deploy_only);
     RUN_TEST(test_halo_teal_armed_dim_when_disarmed);
+    RUN_TEST(test_low_battery_period_validation_boundary);
+    RUN_TEST(test_low_battery_min_valid_period_renders);
     return UNITY_END();
 }
