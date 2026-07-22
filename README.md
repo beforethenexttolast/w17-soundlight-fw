@@ -17,7 +17,7 @@ standalone bench demo.
 ## Build & test
 
 ```
-pio test -e native        # 40 host unit tests (no hardware)
+pio test -e native        # 94 host unit tests (no hardware)
 pio run  -e esp32dev       # real firmware
 pio run  -e esp32dev_sim   # standalone bench demo (scripted drive, no board #1)
 ```
