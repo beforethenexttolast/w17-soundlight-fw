@@ -35,35 +35,75 @@ jobs:
       - name: Build firmware (Wokwi sim variant)
         run: pio run -e esp32dev_sim
 
-  # link2 drift guard (audit R06): lib/link2 + docs/link2_protocol.md are COPIED
-  # verbatim from w17-control-fw (the sender, which owns the protocol). No
-  # submodule keeps them in sync, so this job clones the sibling repo and fails
-  # if the shared contract files differ. Both repos are public, so a shallow
-  # anonymous clone suffices.
+  # link2 drift guard (audit R06). `lib/link2/` here is a VERBATIM COPY of the
+  # shared subset of w17-control-fw's `lib/link2/` — control-fw owns the protocol,
+  # this board is only the receiver. The copy is permanent by decision
+  # (2026-07-25), so it is guarded rather than shared.
+  #
+  # The checker itself lives in the OWNER repo (`tools/link2_copy_check.sh`) and is
+  # deliberately NOT forked here: a drift checker kept in two copies can drift from
+  # itself, which is the one bug it exists to catch. So this job fetches control-fw
+  # and runs ITS script. That trades a build-time dependency on the sibling's main
+  # for a single source of truth — and the dependency fails loudly (exit 2, "could
+  # not check") rather than silently passing, which is the whole point of --strict.
+  #
+  # Both repos are public, so an anonymous shallow clone avoids any cross-repo
+  # token-scope question. It lands outside GITHUB_WORKSPACE so the sibling checkout
+  # can never be mistaken for part of this repo's source tree.
   link2-drift:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Clone sibling repo (link2 contract owner)
-        run: git clone --depth 1 https://github.com/beforethenexttolast/w17-control-fw.git /tmp/sibling
-      - name: Verify link2 contract files are identical across repos
+
+      - name: Fetch w17-control-fw (protocol owner; carries the checker)
         run: |
-          set -e
-          fail=0
-          for f in lib/link2/include/link2/Link2Frame.hpp \
-                   lib/link2/include/link2/Link2Codec.hpp \
-                   lib/link2/src/Link2Codec.cpp \
-                   docs/link2_protocol.md; do
-            if ! diff -u "/tmp/sibling/$f" "$f"; then
-              echo "::error file=$f::link2 contract file drifted from w17-control-fw"
-              fail=1
-            fi
-          done
-          if [ "$fail" -ne 0 ]; then
-            echo "link2 is a COPIED contract owned by w17-control-fw (sender) and"
-            echo "mirrored here in w17-soundlight-fw (receiver). A deliberate protocol"
-            echo "change MUST update BOTH repos in the same push; a brief red here on one"
-            echo "side is expected until the sibling's main carries the matching change."
+          git clone --depth 1 \
+            https://github.com/beforethenexttolast/w17-control-fw.git \
+            "$RUNNER_TEMP/w17-control-fw"
+
+      - name: link2 copy check (strict)
+        run: |
+          # NOTE: no `set -e`. GitHub's default shell is `bash -e`, which would abort
+          # this step the instant the script exits non-zero — collapsing "drifted"
+          # and "could not check" into one anonymous red X. Disabling it is what lets
+          # the case statement below tell the two apart.
+          set +e
+          set -uo pipefail
+
+          script="$RUNNER_TEMP/w17-control-fw/tools/link2_copy_check.sh"
+          if [ ! -f "$script" ]; then
+            echo "::error title=link2 guard COULD NOT CHECK::tools/link2_copy_check.sh is absent from w17-control-fw@main (moved, renamed, or removed). The guard did not run: this is NEITHER a pass NOR drift. Do not merge assuming this job was green."
             exit 1
           fi
-          echo "link2 contract identical across both repos."
+
+          out="$(mktemp)"
+          bash "$script" --strict --sibling "$GITHUB_WORKSPACE" 2>&1 | tee "$out"
+          rc="${PIPESTATUS[0]}"
+
+          case "$rc" in
+            0)
+              # The doc is the script's second, non-fatal tier: it legitimately
+              # carries repo-local prose, so byte-identity is the wrong bar. Surface
+              # it as a warning so "reported" does not mean "invisible".
+              if grep -q 'REPORT --' "$out"; then
+                echo "::warning title=link2 protocol doc differs::The 4 shared CODE files match, but docs/link2_protocol.md differs from control-fw's copy. Non-fatal by design — but check by hand that nothing NORMATIVE drifted (field table, lengths, CRC, the 500 ms staleness rule)."
+              fi
+              echo "link2 drift guard: PASS — all 4 shared link2 code files byte-identical to w17-control-fw@main."
+              ;;
+            1)
+              echo "::error title=link2 DRIFT::A shared link2 code file differs from w17-control-fw@main (diff above). link2 is a copied contract: land the change in control-fw FIRST, then re-copy the shared subset here. A brief red here is expected until both mains carry the matching change."
+              exit 1
+              ;;
+            2)
+              echo "::error title=link2 guard COULD NOT CHECK::The guard did not complete — this is NEITHER a pass NOR drift. Typically a missing/unreadable checkout, or lib/link2 absent on one side. Fix the setup and re-run; a guard that cannot run has proven nothing."
+              exit 1
+              ;;
+            3)
+              echo "::error title=link2 guard usage error::link2_copy_check.sh rejected its arguments (exit 3). This CI invocation and the script's interface have gone out of step — a CI bug, not protocol drift."
+              exit 1
+              ;;
+            *)
+              echo "::error title=link2 guard unexpected exit $rc::Unrecognized exit code from link2_copy_check.sh. Treating as failure."
+              exit 1
+              ;;
+          esac
