@@ -10,6 +10,45 @@ Reference implementation: `lib/link2/` in this repo — **liftable wholesale** i
 board-#2 project (no dependencies beyond a byte-sink interface; the decoder and
 `Link2FrameAssembler` are what board #2 needs).
 
+## Ownership — and why this file is a copy
+
+**`w17-control-fw` owns this protocol.** Every change lands there first; that repo's
+`docs/link2_protocol.md` together with its `lib/link2/` are the definition. This board is
+only the **receiver**, and what lives here are copies: `lib/link2/` is a verbatim copy of the
+shared subset (`include/link2/Link2Frame.hpp`, `include/link2/Link2Codec.hpp`,
+`src/Link2Codec.cpp`, `library.json`), deliberately omitting `src/Link2Sender.cpp`, which is
+control-side only. **This document is a copy too.**
+
+The copy is **permanent by decision (2026-07-25)**, not a bootstrap toward a submodule — a
+submodule would drag the sender onto board #2 as dead code that PlatformIO's LDF would
+compile, for a four-file library that has never drifted.
+
+Because these are copies, they are **guarded**. The checker lives in the owner repo
+(`tools/link2_copy_check.sh` there); there is deliberately **no copy of it here**, since a
+drift checker kept in two places can drift from itself. This repo owns the **enforcement**:
+the `link2-drift` job in `.github/workflows/ci.yml` checks out `w17-control-fw` and runs that
+script in `--strict` mode, where an absent sibling is a hard failure rather than a quiet skip.
+Two tiers, on purpose:
+
+- **Fatal** — the four shared **code** files. They are compiled on both boards, so
+  byte-identity is the right invariant and any difference is a bug. CI also distinguishes
+  *drifted* from *could not check*: a guard that never ran has proven nothing, and must not
+  read green.
+- **Reported (a CI warning, not a failure)** — *this document*. Its normative content — field
+  table, lengths, CRC, the 500 ms staleness rule — must not drift, but byte-identity is the
+  wrong bar, because each copy legitimately carries repo-local prose such as the section you
+  are reading. A diff cannot separate normative drift from local commentary, so CI surfaces
+  the difference and leaves the judgement to a human.
+
+Independently of the copy check, `pio test -e native` pins the wire format hermetically from
+*this* side: `test_golden_frame_bytes` fixes the exact 14 bytes, and the assembler tests pin
+the hard-reject and resync behaviour. (The CRC is additionally pinned against `lib/crsf` on
+the owner side; this board has no `lib/crsf`.) Both layers are needed — a copy check cannot
+tell you the format is *correct*, only that the two copies agree.
+
+Amending this file alone changes nothing on the wire. **Protocol changes happen in
+`w17-control-fw` first**, then the shared subset is re-copied here.
+
 ## Frame layout (14 bytes)
 
 ```
@@ -41,6 +80,25 @@ a corrupted 0xFF length would otherwise swallow ~1 s of following frames).
 | 7–8 | 2 | batteryMv | uint16, 2S pack millivolts. Display garnish — the `lowBattery` flag is the authoritative judgment (calibrated, 3 s-qualified, hysteresis-latched on board #1). |
 | 9 | 1 | ersPercent | 0…100, ERS energy store. Frozen (not zero) outside ERS mode. |
 | 10 | 1 | driveMode | 0 = TRAINING, 1 = RACE (gearbox), 2 = ERS (gearbox + ERS deploy). Receivers may vary engine character per mode; treat unknown values as 1 (RACE). |
+
+### driveMode: wire values vs display labels (audit R19, decided 2026-07-25)
+
+`driveMode` is a **number on the wire**; the names above are the shipping *display* labels.
+**TRAINING / RACE / ERS** is what a person reads — the ground-station HUD shows exactly
+these. Two nearby spellings are deliberate, not drift:
+
+- The iPhone canonical contract maps the same three values to the enum strings
+  `TRAINING` / `GEARBOX` / `GEARBOX_ERS` (`shared/telemetrySnapshot.js` in the
+  `w17-ground-station` repo). Those are **wire identifiers for a machine consumer**, not
+  labels; the HUD maps them back to RACE / ERS before anything is displayed.
+- Board #1 also puts `driveMode` in its CRSF FLIGHTMODE string as a bare integer
+  (`"G%u M%u E%u"` → `M2`), so a handset showing the raw string displays **no mode label at
+  all** and cannot diverge. This board emits no CRSF whatsoever — see the no-control-authority
+  rule in `CLAUDE.md`.
+
+So there is no user-visible contradiction to fix, and none of those surfaces needs to change.
+For this board the practical rule is the one in the table: key engine character off the number,
+and treat an unknown value as RACE.
 
 ## State matrix
 
