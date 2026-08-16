@@ -1,5 +1,7 @@
 #include "soundsynth/EngineSynth.hpp"
 
+#include "soundsynth/SynthProfiles.hpp" // named voices for setVoiceProfile
+
 namespace soundsynth {
 
 namespace {
@@ -59,8 +61,21 @@ void EngineSynth::setParams(uint16_t engineRpm, uint8_t volume, bool ersWhine, b
 }
 
 void EngineSynth::applyPackedParams(uint32_t p) {
+    setVoiceProfile(static_cast<uint8_t>((p >> 27) & 0x3u));
     setParams(static_cast<uint16_t>(p & 0xFFFF), static_cast<uint8_t>((p >> 16) & 0xFF),
               (p >> 24) & 1u, (p >> 25) & 1u, (p >> 26) & 1u);
+}
+
+void EngineSynth::setVoiceProfile(uint8_t voiceProfile) {
+    if (voiceProfile == voiceProfile_) {
+        return; // steady state every control tick: no config churn
+    }
+    voiceProfile_ = voiceProfile;
+    // Named-table lookup, total over uint8_t (reserved -> V10, the protocol
+    // fallback rule -- normalization upstream makes this defense in depth).
+    // Both table entries are static_assert-valid at their definition site,
+    // so config_ can never become invalid through here.
+    config_ = profiles::voiceForProfile(voiceProfile);
 }
 
 int16_t EngineSynth::sineLookup(uint32_t phase) const { return kSine.v[phase >> 24]; }

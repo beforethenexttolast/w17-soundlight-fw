@@ -5,10 +5,12 @@ to [w17-control-fw](https://github.com/beforethenexttolast/w17-control-fw) (ESP3
 
 It consumes the one-way **link2** UART stream from board #1 and drives:
 - **Engine sound** — procedural synthesis (harmonic partial stack + noise + ERS whine) over
-  I2S → MAX98357A → 4Ω speaker, with named voice profiles (`SynthProfiles.hpp`: **V10**
-  ships as the compile-time default; a **V6 turbo-hybrid** voice exists, selection mechanism
-  pending an owner decision). A PCM sample player can drop in later behind the same
-  `ISampleSource` seam (the "hybrid" choice).
+  I2S → MAX98357A → 4Ω speaker, with named voice profiles (`SynthProfiles.hpp`: **V10** is
+  the boot default; the **V6 turbo-hybrid** voice is selected at runtime by the link2 v2
+  `soundProfile` byte, and the v2 `volume` byte scales the output 0–100 with 0 = true
+  silence — both persisted on board #1 only; unknown profile values fall back to the V10).
+  A PCM sample player can drop in later behind the same `ISampleSource` seam (the "hybrid"
+  choice).
 - **WS2812 lights** — brake, turn indicators, halo, ignition-on animation (crank comet +
   fire-up flash), DRS-open tell, F1 rain light (flashes while ERS is *harvesting*),
   low-battery pulse, and a failsafe hazard blink that overrides everything (a link that

@@ -1,7 +1,10 @@
 {
   "name": "soundsynth",
   "version": "0.1.0",
-  "description": "Procedural engine-sound synthesis (wavetable partial stack + ERS whine + noise) behind an ISampleSource seam. Pure integer DSP, no hardware.",
+  "description": "Procedural engine-sound synthesis (wavetable partial stack + ERS whine + noise) behind an ISampleSource seam, with named voice profiles selected by the link2 v2 soundProfile byte. Pure integer DSP, no hardware.",
   "frameworks": "*",
-  "platforms": "*"
+  "platforms": "*",
+  "dependencies": {
+    "link2": "*"
+  }
 }

@@ -34,9 +34,11 @@ constexpr link2monitor::Link2MonitorConfig kMonitorConfig{};
 static_assert(kMonitorConfig.valid(), "monitor config");
 constexpr enginesim::EngineSimConfig kEngineConfig{};
 static_assert(kEngineConfig.valid(), "engine config");
-// Engine voice: the compile-time default profile (the V10 -- see
-// SynthProfiles.hpp; runtime/NVS/link2 selection is an open owner decision
-// and deliberately does not exist yet).
+// Engine voice: the BOOT profile (the V10 -- see SynthProfiles.hpp), heard
+// until the first link2 frame arrives. At runtime the v2 soundProfile byte
+// selects the voice (owner decision 15, 2026-08-16): normalized in the
+// control tick below, carried in the packed word's profile bits, applied by
+// EngineSynth::applyPackedParams on the audio task.
 constexpr soundsynth::EngineSynthConfig kSynthConfig = soundsynth::profiles::kDefault;
 static_assert(kSynthConfig.valid(), "synth config: partial sum exceeds headroom");
 constexpr lights::LightConfig kLightConfig{};
@@ -195,10 +197,19 @@ void loop() {
         monitor.poll(nowMs);
         engine.update(nowMs, monitor.state());
         const enginesim::EngineState& e = engine.engine();
+        // link2 v2 operator sound config rides the same single packed word:
+        // the operator volume composes into the state volume here on core 1
+        // (failsafe still wins -- Ignition::Off makes the state volume 0 and
+        // 0 scales to 0), and the normalized voice profile takes the two
+        // profile bits. The cross-core surface stays word + heartbeat.
+        const link2::VehicleState& v = monitor.state();
         gSynthParams.store(
-            soundsynth::packParams(e.engineRpm,
-                                   audiodecision::synthVolumeFor(e.ignition, e.throttlePercent),
-                                   e.ersWhine, e.limiterActive, e.overrunActive),
+            soundsynth::packParams(
+                e.engineRpm,
+                audiodecision::applyOperatorVolume(
+                    audiodecision::synthVolumeFor(e.ignition, e.throttlePercent), v.volume),
+                e.ersWhine, e.limiterActive, e.overrunActive,
+                audiodecision::normalizeSoundProfile(v.soundProfile)),
             std::memory_order_relaxed);
         gControlHeartbeatMs.store(nowMs, std::memory_order_relaxed);
     }

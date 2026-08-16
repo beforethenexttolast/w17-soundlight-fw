@@ -10,9 +10,11 @@
 #include "audiodecision/AudioDecision.hpp"
 #include "enginesim/EngineSim.hpp"
 
+using audiodecision::applyOperatorVolume;
 using audiodecision::AudioRuntimeAction;
 using audiodecision::classifyWrite;
 using audiodecision::isAudioHeartbeatStale;
+using audiodecision::normalizeSoundProfile;
 using audiodecision::runtimeActionFor;
 using audiodecision::synthVolumeFor;
 using audiodecision::WriteOutcome;
@@ -74,6 +76,55 @@ void test_volume_unknown_ignition_takes_running_path() {
     const Ignition unknown = static_cast<Ignition>(7);
     TEST_ASSERT_EQUAL_UINT8(90, synthVolumeFor(unknown, 0));
     TEST_ASSERT_EQUAL_UINT8(255, synthVolumeFor(unknown, 100));
+}
+
+// ---- link2 v2 operator sound config (profile normalization + volume) ------
+
+// Defined wire values pass through; EVERY reserved value falls back to V10
+// (0). The value 3 matters most: a bare 2-bit mask would alias 3 onto... 3,
+// and 5 onto 1 (the V6) -- normalization must happen before the pack.
+void test_normalize_sound_profile() {
+    TEST_ASSERT_EQUAL_UINT8(0, normalizeSoundProfile(0)); // V10
+    TEST_ASSERT_EQUAL_UINT8(1, normalizeSoundProfile(1)); // V6 turbo-hybrid
+    TEST_ASSERT_EQUAL_UINT8(0, normalizeSoundProfile(2)); // first reserved
+    TEST_ASSERT_EQUAL_UINT8(0, normalizeSoundProfile(3));
+    TEST_ASSERT_EQUAL_UINT8(0, normalizeSoundProfile(5));   // would alias to V6 if masked
+    TEST_ASSERT_EQUAL_UINT8(0, normalizeSoundProfile(255));
+}
+
+// The documented bounds of the linear mapping: 0 -> true silence (exact 0),
+// 100 -> identity (bit-transparent), 50 -> half, truncating.
+void test_apply_operator_volume_bounds_0_50_100() {
+    TEST_ASSERT_EQUAL_UINT8(0, applyOperatorVolume(255, 0));
+    TEST_ASSERT_EQUAL_UINT8(0, applyOperatorVolume(70, 0));
+    TEST_ASSERT_EQUAL_UINT8(127, applyOperatorVolume(255, 50)); // 12750/100, exact
+    TEST_ASSERT_EQUAL_UINT8(45, applyOperatorVolume(90, 50));
+    TEST_ASSERT_EQUAL_UINT8(255, applyOperatorVolume(255, 100)); // identity
+    TEST_ASSERT_EQUAL_UINT8(90, applyOperatorVolume(90, 100));
+    TEST_ASSERT_EQUAL_UINT8(0, applyOperatorVolume(0, 100)); // nothing to scale
+    // Truncation is the documented behavior (integer math, no rounding).
+    TEST_ASSERT_EQUAL_UINT8(252, applyOperatorVolume(255, 99)); // 25245/100
+    TEST_ASSERT_EQUAL_UINT8(56, applyOperatorVolume(70, 80));   // 5600/100, default volume
+}
+
+// Wire volumes past kVolumeMax clamp to 100 (receiver obligation; the sender
+// never emits them, but the wire could).
+void test_apply_operator_volume_clamps_above_max() {
+    TEST_ASSERT_EQUAL_UINT8(255, applyOperatorVolume(255, 101));
+    TEST_ASSERT_EQUAL_UINT8(255, applyOperatorVolume(255, 255));
+    TEST_ASSERT_EQUAL_UINT8(100, applyOperatorVolume(100, 200));
+}
+
+// Failsafe-over-volume precedence at the decision layer: link loss drives
+// Ignition::Off upstream, synthVolumeFor then reports 0, and NO operator
+// volume can scale 0 back up. (The full-chain version lives in
+// test_integration; the audio task's dead-man is a third, independent net.)
+void test_operator_volume_cannot_defeat_failsafe_silence() {
+    TEST_ASSERT_EQUAL_UINT8(0, applyOperatorVolume(synthVolumeFor(Ignition::Off, 0), 100));
+    TEST_ASSERT_EQUAL_UINT8(0, applyOperatorVolume(synthVolumeFor(Ignition::Off, 100), 100));
+    TEST_ASSERT_EQUAL_UINT8(0, applyOperatorVolume(synthVolumeFor(Ignition::Off, 100), 255));
+    // And the converse sanity: a live engine at operator 100 is untouched.
+    TEST_ASSERT_EQUAL_UINT8(70, applyOperatorVolume(synthVolumeFor(Ignition::Cranking, 0), 100));
 }
 
 // ---- Heartbeat dead-man (timeout 500 ms, strict greater-than) -------------
@@ -236,6 +287,10 @@ int main(int, char**) {
     RUN_TEST(test_volume_running_max_throttle);
     RUN_TEST(test_volume_running_truncation_odd_throttles);
     RUN_TEST(test_volume_unknown_ignition_takes_running_path);
+    RUN_TEST(test_normalize_sound_profile);
+    RUN_TEST(test_apply_operator_volume_bounds_0_50_100);
+    RUN_TEST(test_apply_operator_volume_clamps_above_max);
+    RUN_TEST(test_operator_volume_cannot_defeat_failsafe_silence);
     RUN_TEST(test_deadman_fresh_within_timeout);
     RUN_TEST(test_deadman_stale_past_timeout);
     RUN_TEST(test_deadman_boundary_499_500_501);

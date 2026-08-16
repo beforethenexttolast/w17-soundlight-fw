@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "enginesim/EngineSim.hpp"
+#include "link2/Link2Frame.hpp" // v2 soundProfile/volume wire constants
 
 // Pure audio-task decisions, shared verbatim by src/main.cpp and the native
 // tests so production constants and the dead-man boundary can never drift into
@@ -25,6 +26,52 @@ constexpr uint8_t synthVolumeFor(enginesim::Ignition ignition, uint8_t throttleP
     if (ignition == enginesim::Ignition::Off) return 0;
     if (ignition == enginesim::Ignition::Cranking) return 70;
     return static_cast<uint8_t>(90 + throttlePercent * 165 / 100); // 90..255
+}
+
+// ---- link2 v2 operator sound config (vision decision 15) -------------------
+
+// Wire soundProfile -> the value packed into the synth-param word's two
+// profile bits. THE normative fallback gate: every reserved value
+// (>= link2::kSoundProfileCount) becomes V10 here, on the control core,
+// BEFORE the 2-bit pack -- masking a reserved value like 5 (0b101) into two
+// bits without this rule would alias it onto the V6, violating the
+// protocol's fall-back-to-V10 obligation. (soundsynth::profiles::
+// voiceForProfile is total too, as defense in depth.)
+constexpr uint8_t normalizeSoundProfile(uint8_t wireProfile) {
+    return wireProfile < link2::kSoundProfileCount ? wireProfile : link2::kSoundProfileV10;
+}
+
+// Composes the operator volume (link2 v2 `volume` byte, 0..100) into the
+// engine-state volume (synthVolumeFor's 0..255), producing the byte packed
+// into the synth-param word. The synth applies that byte at its final gain
+// stage (`sample = sample * vol / 255`, the last multiplicative stage before
+// the int16 clamp), so operator scaling takes effect exactly there, in
+// integer math, at 8-bit gain resolution.
+//
+// The mapping is LINEAR (truncating integer multiply), not stepped/log,
+// deliberately:
+//   - the two ends carry the product requirements exactly: 0 -> 0 (true
+//     silence, bit-exact) and 100 -> identity (bit-transparent, the
+//     pre-v2 behavior);
+//   - it is monotone at every step in between, which is all a pit-lane
+//     console knob set to a handful of values (0 mute / ~25 quiet indoor /
+//     80 default / 100 max) needs -- a perceptual (log) taper would buy
+//     nothing an operator would notice at those set points and would cost a
+//     LUT or pow-approx in an integer-only path;
+//   - composing HERE, on the control core, keeps the cross-core surface at
+//     the single packed word (CLAUDE.md cross-core rule) -- a separate gain
+//     stage inside render() would have needed a second shared channel.
+// Values above link2::kVolumeMax clamp to 100 first (receiver obligation;
+// the sender never emits them, but the wire could).
+//
+// Precedence note: failsafe/staleness silencing needs no special case here.
+// Link loss drives Ignition to Off upstream, so stateVolume arrives as 0 and
+// 0 * anything = 0 -- volume can never resurrect a silenced engine. The
+// audio task's dead-man additionally bypasses this path entirely.
+constexpr uint8_t applyOperatorVolume(uint8_t stateVolume, uint8_t operatorVolume) {
+    const uint8_t op =
+        operatorVolume > link2::kVolumeMax ? link2::kVolumeMax : operatorVolume;
+    return static_cast<uint8_t>(stateVolume * op / link2::kVolumeMax);
 }
 
 // Audio-task dead-man: the control loop stamps a heartbeat (millis()) each

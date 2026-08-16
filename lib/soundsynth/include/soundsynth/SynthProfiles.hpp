@@ -1,14 +1,18 @@
 #pragma once
 
+#include "link2/Link2Frame.hpp" // soundProfile wire values
 #include "soundsynth/EngineSynth.hpp"
 
 // Named engine-voice profiles (vision decision 15: V10 default, selectable
-// profiles desired). GROUNDWORK ONLY: this file names the parameter sets and
-// pins the shipping default at compile time. There is deliberately NO
-// selection mechanism here -- board-2 NVS vs a link2 field vs a build flag is
-// an open OWNER decision, and inventing any of them (including a -D flag)
-// would preempt it. When the owner picks, the selector consumes these
-// profiles; the voices themselves do not change.
+// profiles desired). The selection mechanism is DECIDED (owner, 2026-08-16):
+// the link2 v2 `soundProfile` payload byte, persisted only on board #1
+// (tuning-console key sound.profile) and consumed here at runtime --
+// normalizeSoundProfile on the control core, two bits of the packed synth
+// word across cores, EngineSynth::setVoiceProfile on the audio task. This
+// board deliberately still has no NVS and no build flag for voices; the
+// wire byte is the ONLY selector, and voiceForProfile() below is its
+// mapping. kDefault stays the V10: the boot voice until the first frame,
+// and the meaning of wire value 0.
 namespace soundsynth {
 namespace profiles {
 
@@ -65,14 +69,26 @@ constexpr EngineSynthConfig v6TurboHybrid() {
     return c;
 }
 
-// The compile-time shipping default. STAYS THE V10 until the owner picks a
-// selection mechanism (see the header note); src/main.cpp builds its synth
-// from this and nothing else.
+// The compile-time default: the BOOT voice (what src/main.cpp constructs the
+// synth with, heard until the first link2 frame selects a profile) and the
+// voice wire value 0 means. Stays the V10 by owner decision 15.
 inline constexpr EngineSynthConfig kDefault = v10();
 
+// The wire mapping: link2 v2 `soundProfile` byte -> named voice. Total over
+// uint8_t, per the protocol's fallback rule (docs/link2_protocol.md payload
+// row 11): every reserved value >= link2::kSoundProfileCount selects the V10
+// -- a voice fallback, never a rejection, so a build that predates a future
+// voice keeps making sound. Callers normally pass an already-normalized
+// value (audiodecision::normalizeSoundProfile); totality here is defense in
+// depth, not the primary gate.
+constexpr EngineSynthConfig voiceForProfile(uint8_t wireProfile) {
+    return wireProfile == link2::kSoundProfileV6Hybrid ? v6TurboHybrid() : v10();
+}
+
 // Definition-site guarantees (house rule: config valid() + static_assert):
-// both named voices are valid, genuinely distinct, and the default is pinned
-// to the historical V10 parameter set.
+// both named voices are valid, genuinely distinct, the default is pinned to
+// the historical V10 parameter set, and the wire mapping honors both the
+// defined values and the reserved-value fallback.
 static_assert(v10().valid(), "V10 profile invalid");
 static_assert(v6TurboHybrid().valid(), "V6 turbo-hybrid profile invalid");
 static_assert(v6TurboHybrid().firingsPerRev == 3, "V6 fires 3 times per rev");
@@ -80,7 +96,15 @@ static_assert(sameVoice(v10(), EngineSynthConfig{}),
               "the V10 profile must stay byte-for-byte the historical default voice");
 static_assert(!sameVoice(v10(), v6TurboHybrid()), "profiles must actually differ");
 static_assert(sameVoice(kDefault, v10()),
-              "shipping default stays the V10 until the owner picks a selection mechanism");
+              "the boot/default voice stays the V10 (owner decision 15; wire value 0)");
+static_assert(sameVoice(voiceForProfile(link2::kSoundProfileV10), v10()),
+              "wire 0 must select the V10");
+static_assert(sameVoice(voiceForProfile(link2::kSoundProfileV6Hybrid), v6TurboHybrid()),
+              "wire 1 must select the V6 turbo-hybrid");
+static_assert(sameVoice(voiceForProfile(link2::kSoundProfileCount), v10()),
+              "the first reserved wire value must fall back to the V10");
+static_assert(sameVoice(voiceForProfile(0xFF), v10()),
+              "every reserved wire value must fall back to the V10");
 
 } // namespace profiles
 } // namespace soundsynth

@@ -264,7 +264,8 @@ void test_deterministic_given_seed() {
 }
 
 void test_packed_params_roundtrip() {
-    const uint32_t p = soundsynth::packParams(12345, 200, true, false, true);
+    const uint32_t p = soundsynth::packParams(12345, 200, true, false, true,
+                                              /*voiceProfile=*/0);
     EngineSynth synth;
     synth.applyPackedParams(p);
     // Render advances using the unpacked params; just assert it produces
@@ -278,6 +279,119 @@ void test_packed_params_roundtrip() {
         if (v > peak) peak = v;
     }
     TEST_ASSERT_TRUE(peak > 0);
+}
+
+// ---- link2 v2 voice-profile selection through the packed word --------------
+
+// Bit layout of the profile field, pinned: bits 27..28, defensively masked to
+// two bits INSIDE packParams. The mask is not the reserved-value fallback --
+// that is audiodecision::normalizeSoundProfile upstream (tested in
+// test_audiodecision) plus voiceForProfile's totality; here only the wire
+// bits themselves are pinned.
+void test_packed_word_carries_voice_profile_bits() {
+    TEST_ASSERT_EQUAL_HEX32(0u, soundsynth::packParams(0, 0, false, false, false, 0));
+    TEST_ASSERT_EQUAL_HEX32(1u << 27, soundsynth::packParams(0, 0, false, false, false, 1));
+    TEST_ASSERT_EQUAL_HEX32(3u << 27, soundsynth::packParams(0, 0, false, false, false, 3));
+    // Defensive mask: only two bits ever leave packParams.
+    TEST_ASSERT_EQUAL_HEX32(3u << 27, soundsynth::packParams(0, 0, false, false, false, 0xFF));
+    // Profile bits do not disturb the neighbors.
+    const uint32_t p = soundsynth::packParams(12345, 200, true, true, true, 1);
+    TEST_ASSERT_EQUAL_UINT16(12345, static_cast<uint16_t>(p & 0xFFFF));
+    TEST_ASSERT_EQUAL_UINT8(200, static_cast<uint8_t>((p >> 16) & 0xFF));
+    TEST_ASSERT_EQUAL_HEX32(1u, (p >> 24) & 1u);
+    TEST_ASSERT_EQUAL_HEX32(1u, (p >> 25) & 1u);
+    TEST_ASSERT_EQUAL_HEX32(1u, (p >> 26) & 1u);
+    TEST_ASSERT_EQUAL_HEX32(1u, (p >> 27) & 0x3u);
+}
+
+// Switching determinism: two fresh synths with the same seed, fed the same
+// packed-word script (V10 -> V6 -> V10 with identical rpm/volume), must
+// produce byte-identical audio. The voice swap keeps phases/noise state, so
+// nothing about a switch depends on when the synth was constructed.
+void test_voice_profile_switching_deterministic() {
+    EngineSynth a(soundsynth::EngineSynthConfig{}, 0x77u);
+    EngineSynth b(soundsynth::EngineSynthConfig{}, 0x77u);
+    static int16_t ba[256 * 2];
+    static int16_t bb[256 * 2];
+
+    const uint8_t script[6] = {0, 0, 1, 1, 0, 1};
+    for (uint8_t profile : script) {
+        const uint32_t word = soundsynth::packParams(9000, 220, false, false, false, profile);
+        a.applyPackedParams(word);
+        b.applyPackedParams(word);
+        for (int i = 0; i < 4; ++i) {
+            a.render(ba, 256);
+            b.render(bb, 256);
+            for (int s = 0; s < 256 * 2; ++s) {
+                TEST_ASSERT_EQUAL_INT16(ba[s], bb[s]);
+            }
+        }
+    }
+}
+
+// The profile field actually selects a DIFFERENT voice (V6 differs from V10
+// audibly and byte-wise), and a reserved packed value (2..3) falls back to
+// the V10 so it renders identically to profile 0.
+void test_voice_profile_selects_and_reserved_falls_back_to_v10() {
+    EngineSynth v10Run(soundsynth::EngineSynthConfig{}, 0x99u);
+    EngineSynth v6Run(soundsynth::EngineSynthConfig{}, 0x99u);
+    EngineSynth reservedRun(soundsynth::EngineSynthConfig{}, 0x99u);
+    static int16_t b10[256 * 2];
+    static int16_t b6[256 * 2];
+    static int16_t br[256 * 2];
+
+    v10Run.applyPackedParams(soundsynth::packParams(9000, 220, false, false, false, 0));
+    v6Run.applyPackedParams(soundsynth::packParams(9000, 220, false, false, false, 1));
+    reservedRun.applyPackedParams(soundsynth::packParams(9000, 220, false, false, false, 2));
+
+    bool differs = false;
+    for (int i = 0; i < 4; ++i) {
+        v10Run.render(b10, 256);
+        v6Run.render(b6, 256);
+        reservedRun.render(br, 256);
+        for (int s = 0; s < 256 * 2; ++s) {
+            if (b10[s] != b6[s]) differs = true;
+            TEST_ASSERT_EQUAL_INT16(b10[s], br[s]); // reserved == V10, sample-exact
+        }
+    }
+    TEST_ASSERT_TRUE(differs); // V6 must not be the V10 in disguise
+}
+
+// Operator-volume bounds through the REAL render path: composed gains for
+// operator 100 / 50 / 0 over the same engine state produce strictly ordered
+// peaks, and operator 0 is bit-exact silence from the first sample on a
+// fresh synth (smoothed volume starts at 0 and stays there). The identical
+// seeds + identical non-volume params make the pre-volume sample streams
+// equal, so the ordering is exact, not statistical.
+void test_operator_volume_bounds_through_render() {
+    // Composed on the control core in production (applyOperatorVolume):
+    // state 255 with operator 100 / 50 / 0.
+    EngineSynth full(soundsynth::EngineSynthConfig{}, 0xABu);
+    EngineSynth half(soundsynth::EngineSynthConfig{}, 0xABu);
+    EngineSynth mute(soundsynth::EngineSynthConfig{}, 0xABu);
+    full.setParams(12000, 255, false, false, false);
+    half.setParams(12000, 127, false, false, false);
+    mute.setParams(12000, 0, false, false, false);
+
+    static int16_t bf[256 * 2];
+    static int16_t bh[256 * 2];
+    static int16_t bm[256 * 2];
+    int32_t peakFull = 0;
+    int32_t peakHalf = 0;
+    for (int i = 0; i < 8; ++i) { // plenty for the volume smoothing to converge
+        full.render(bf, 256);
+        half.render(bh, 256);
+        mute.render(bm, 256);
+        for (int s = 0; s < 256 * 2; ++s) {
+            const int32_t vf = bf[s] < 0 ? -bf[s] : bf[s];
+            const int32_t vh = bh[s] < 0 ? -bh[s] : bh[s];
+            if (vf > peakFull) peakFull = vf;
+            if (vh > peakHalf) peakHalf = vh;
+            TEST_ASSERT_EQUAL_INT16(0, bm[s]); // operator 0: true silence, every sample
+        }
+    }
+    TEST_ASSERT_TRUE(peakFull > peakHalf);
+    TEST_ASSERT_TRUE(peakHalf > 0);
 }
 
 // --- Arithmetic-safety batch: the noise multiplication is now widened to
@@ -615,6 +729,10 @@ int main(int, char**) {
     RUN_TEST(test_limiter_gates_some_samples_to_zero);
     RUN_TEST(test_deterministic_given_seed);
     RUN_TEST(test_packed_params_roundtrip);
+    RUN_TEST(test_packed_word_carries_voice_profile_bits);
+    RUN_TEST(test_voice_profile_switching_deterministic);
+    RUN_TEST(test_voice_profile_selects_and_reserved_falls_back_to_v10);
+    RUN_TEST(test_operator_volume_bounds_through_render);
     RUN_TEST(test_valid_overrun_extreme_saturates_and_deterministic);
     RUN_TEST(test_valid_high_rpm_extreme_saturates_and_deterministic);
     RUN_TEST(test_boundary_configs_render_safely_and_deterministic);

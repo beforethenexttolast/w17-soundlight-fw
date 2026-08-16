@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "link2/Link2Frame.hpp" // sound-profile wire values (voice selection)
 #include "soundsynth/ISampleSource.hpp"
 
 namespace soundsynth {
@@ -46,19 +47,28 @@ constexpr int32_t smoothingStepForDelta(int32_t delta) {
 
 // Packed synth parameters, written by the control core and read by the audio
 // core through a single std::atomic<uint32_t> (see EngineSynth::packParams /
-// applyPackedParams). One 32-bit word => torn-free lock-free hand-off.
+// applyPackedParams). One 32-bit word => torn-free lock-free hand-off. This
+// word stays the ONLY cross-core surface (plus the heartbeat) even with the
+// link2 v2 fields: the operator volume is composed into `volume` on the
+// control core (audiodecision::applyOperatorVolume) and the voice profile
+// rides two formerly-reserved bits.
 //   bits  0..15  engineRpm      (0..65535)
-//   bits 16..23  volume         (0..255, 0 = silent)
+//   bits 16..23  volume         (0..255, 0 = silent; state volume with the
+//                                operator volume already composed in)
 //   bit     24   ersWhine
 //   bit     25   limiterActive  (redline ignition-cut buzz)
 //   bit     26   overrunActive  (lift-off crackle window)
-//   bits 27..31  reserved
+//   bits 27..28  voiceProfile   (link2 v2 soundProfile, ALREADY normalized by
+//                                audiodecision::normalizeSoundProfile -- the
+//                                mask here is defensive, not the fallback rule)
+//   bits 29..31  reserved
 inline constexpr uint32_t packParams(uint16_t engineRpm, uint8_t volume, bool ersWhine,
-                                     bool limiter, bool overrun) {
+                                     bool limiter, bool overrun, uint8_t voiceProfile) {
     return static_cast<uint32_t>(engineRpm) | (static_cast<uint32_t>(volume) << 16) |
            (static_cast<uint32_t>(ersWhine ? 1u : 0u) << 24) |
            (static_cast<uint32_t>(limiter ? 1u : 0u) << 25) |
-           (static_cast<uint32_t>(overrun ? 1u : 0u) << 26);
+           (static_cast<uint32_t>(overrun ? 1u : 0u) << 26) |
+           (static_cast<uint32_t>(voiceProfile & 0x3u) << 27);
 }
 
 struct EngineSynthConfig {
@@ -120,6 +130,18 @@ public:
     void setParams(uint16_t engineRpm, uint8_t volume, bool ersWhine, bool limiter, bool overrun);
     void applyPackedParams(uint32_t packed);
 
+    // Voice selection (link2 v2 soundProfile, vision decision 15). Swaps
+    // config_ to the NAMED profile table entry (SynthProfiles.hpp) -- total
+    // over uint8_t, reserved values select the V10 per the protocol fallback
+    // rule. A no-op unless the profile CHANGES, so a synth constructed with a
+    // custom config (tests) keeps it until the first actual switch; once a
+    // switch happens, the voice always comes from the named table. Phases,
+    // envelopes and the noise stream deliberately carry across a swap: the
+    // step in timbre is the feature, a reseed would break determinism.
+    // AUDIO-TASK-ONLY like every other mutator here; the production caller is
+    // applyPackedParams (profile bits 27..28).
+    void setVoiceProfile(uint8_t voiceProfile);
+
     size_t render(int16_t* out, size_t frameCount) override;
 
 private:
@@ -129,6 +151,11 @@ private:
     uint16_t nextNoise();
 
     EngineSynthConfig config_;
+
+    // Which named voice config_ currently speaks (see setVoiceProfile).
+    // Initialized to V10 because that is both the wire default and what the
+    // production constructor is given (profiles::kDefault).
+    uint8_t voiceProfile_ = link2::kSoundProfileV10;
 
     // Target params (set by control core) and smoothed params (audio core)
     // to avoid zipper/click on 50 Hz steps.

@@ -21,9 +21,10 @@ DecodeResult decodeFrame(const uint8_t* data, size_t len, VehicleState& out);
 
 // Byte-stream framer for the receiving side (board #2) and tests. Mirrors
 // crsf::CrsfFrameAssembler: resyncs on the next start byte after any failure.
-// The length byte is hard-rejected the moment it arrives if it isn't a
-// supported v1 length -- otherwise one corrupt 0xFF length byte would swallow
-// ~1s of following frames before resync.
+// The length byte is hard-rejected the moment it arrives if it isn't THE
+// supported length (kPayloadLen -- so a v1 sender's 0x0B dies here too, per
+// the coordinated-flash rule) -- otherwise one corrupt 0xFF length byte would
+// swallow ~1s of following frames before resync.
 class Link2FrameAssembler {
 public:
     enum class FeedResult : uint8_t { Incomplete, FrameReady, FrameInvalid };

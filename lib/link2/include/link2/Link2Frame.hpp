@@ -52,7 +52,7 @@ inline constexpr size_t kFrameLen = 3 + kPayloadLen; // start + length + payload
 
 // Flag bit positions (payload byte [3]).
 inline constexpr uint8_t kFlagBraking = 1u << 0;
-inline constexpr uint8_t kFlagReverse = 1u << 1; // reserved, always 0 in v1
+inline constexpr uint8_t kFlagReverse = 1u << 1; // reserved since v1, always 0
 inline constexpr uint8_t kFlagDrsOpen = 1u << 2;
 inline constexpr uint8_t kFlagArmed = 1u << 3;
 inline constexpr uint8_t kFlagFailsafe = 1u << 4;
@@ -79,7 +79,7 @@ struct VehicleState {
     int8_t throttlePercent = 0;
     int8_t steeringPercent = 0;
     bool braking = false;
-    bool reverse = false; // reserved, always false in v1
+    bool reverse = false; // reserved since v1, always false
     bool drsOpen = false;
     bool armed = false;
     bool failsafe = true; // boot-safe default: never report a phantom Active

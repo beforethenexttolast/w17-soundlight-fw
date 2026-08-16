@@ -24,11 +24,19 @@ using soundsynth::EngineSynth;
 
 namespace {
 
-// Volume comes from the production decision (audiodecision::synthVolumeFor),
-// the same function src/main.cpp packs into the synth-param word -- no
-// test-local copy of the mapping or its constants.
-uint8_t volumeFor(const enginesim::EngineState& e) {
-    return audiodecision::synthVolumeFor(e.ignition, e.throttlePercent);
+// One control tick's parameter hand-off, EXACTLY as src/main.cpp does it:
+// state volume from the production decision, the link2 v2 operator volume
+// composed in, the profile normalized, everything through packParams ->
+// applyPackedParams (the real cross-core word). No test-local copy of any
+// mapping or constant.
+void publishTick(EngineSynth& synth, const enginesim::EngineState& e,
+                 const VehicleState& v) {
+    synth.applyPackedParams(soundsynth::packParams(
+        e.engineRpm,
+        audiodecision::applyOperatorVolume(
+            audiodecision::synthVolumeFor(e.ignition, e.throttlePercent), v.volume),
+        e.ersWhine, e.limiterActive, e.overrunActive,
+        audiodecision::normalizeSoundProfile(v.soundProfile)));
 }
 
 void feedFrame(Link2Monitor& mon, const VehicleState& s, uint32_t nowMs) {
@@ -62,13 +70,15 @@ void test_full_chain_arm_drive_then_link_loss() {
     static int16_t audio[256 * 2];
     Rgb px[kNumPixels];
 
-    // --- Phase 1: armed + full throttle for ~1s. Sound should get loud. ---
+    // --- Phase 1: armed + full throttle for ~1s, operator volume pinned at
+    // the MAXIMUM (100) so phase 2 proves failsafe wins over it. ---
     VehicleState driving;
     driving.armed = true;
     driving.failsafe = false;
     driving.throttlePercent = 100;
     driving.gear = 3;
     driving.rpm = 5000;
+    driving.volume = 100; // loudest the operator can ask for
 
     uint32_t t = 0;
     for (int i = 0; i < 60; ++i) { // 60 control ticks @ ~20ms
@@ -76,8 +86,7 @@ void test_full_chain_arm_drive_then_link_loss() {
         feedFrame(mon, driving, t);
         mon.poll(t);
         sim.update(t, mon.state());
-        const auto& e = sim.engine();
-        synth.setParams(e.engineRpm, volumeFor(e), e.ersWhine, e.limiterActive, e.overrunActive);
+        publishTick(synth, sim.engine(), mon.state());
         // Render a couple of audio blocks per control tick (audio runs faster).
         synth.render(audio, 256);
         synth.render(audio, 256);
@@ -91,13 +100,14 @@ void test_full_chain_arm_drive_then_link_loss() {
     TEST_ASSERT_TRUE(drivingPeak > 3000);               // audibly loud
 
     // --- Phase 2: link goes silent. After 500ms the monitor projects
-    // failsafe; the engine must fall to Off (silent), lights to hazard. ---
+    // failsafe; the engine must fall to Off (silent), lights to hazard --
+    // even though the HELD operator volume is still 100 (failsafe-over-
+    // volume precedence, end to end). ---
     for (int i = 0; i < 60; ++i) {
         t += 20;
         mon.poll(t); // no frames fed
         sim.update(t, mon.state());
-        const auto& e = sim.engine();
-        synth.setParams(e.engineRpm, volumeFor(e), e.ersWhine, e.limiterActive, e.overrunActive);
+        publishTick(synth, sim.engine(), mon.state());
         synth.render(audio, 256);
         synth.render(audio, 256);
         lights.render(mon.state(), mon.status(), sim.engine().ignition, t, px);
@@ -105,7 +115,9 @@ void test_full_chain_arm_drive_then_link_loss() {
 
     TEST_ASSERT_EQUAL(LinkStatus::Lost, mon.status());
     TEST_ASSERT_EQUAL(Ignition::Off, sim.engine().ignition);
-    // Volume ramped to 0 -> silence.
+    // The monitor HOLDS the operator volume (config, not state) ...
+    TEST_ASSERT_EQUAL_UINT8(100, mon.state().volume);
+    // ... and the engine is silent anyway: volume never outranks failsafe.
     synth.render(audio, 256);
     TEST_ASSERT_EQUAL_INT32(0, blockPeak(audio, 256));
 
@@ -140,10 +152,14 @@ void test_full_drive_script_produces_audible_sound() {
         s.ersPercent = static_cast<uint8_t>((step * 3) % 101);
         s.braking = (step % 11) == 0;
         s.steeringPercent = static_cast<int8_t>(((step * 13) % 200) - 100);
+        // Exercise the v2 fields across the script: alternate the voice
+        // profile (incl. a reserved value that must fall back to V10) and
+        // sweep the operator volume through its upper half.
+        s.soundProfile = static_cast<uint8_t>((step / 100) % 3); // 0, 1, 2(reserved)
+        s.volume = static_cast<uint8_t>(50 + (step % 51));       // 50..100
         feedFrame(mon, s, t);
         sim.update(t, mon.state());
-        const auto& e = sim.engine();
-        synth.setParams(e.engineRpm, volumeFor(e), e.ersWhine, e.limiterActive, e.overrunActive);
+        publishTick(synth, sim.engine(), mon.state());
         synth.render(audio, 256);
         lights.render(mon.state(), mon.status(), sim.engine().ignition, t, px);
         const int32_t p = blockPeak(audio, 256);
@@ -157,9 +173,101 @@ void test_full_drive_script_produces_audible_sound() {
     TEST_ASSERT_TRUE(scriptPeak > 3000); // audibly loud at some point in the run
 }
 
+// The v2 operator config rides actual FRAMES to the synth: two identical
+// chains that differ only in the transmitted soundProfile byte diverge
+// audibly (V6 selected over the wire), a reserved byte behaves exactly like
+// V10, and the transmitted volume byte scales the output (quiet < loud, and
+// volume 0 converges to true silence) -- all through monitor -> sim ->
+// packParams -> applyPackedParams, the production path.
+void test_wire_profile_and_volume_reach_the_synth() {
+    Link2Monitor monV10;
+    Link2Monitor monV6;
+    Link2Monitor monReserved;
+    EngineSim simV10;
+    EngineSim simV6;
+    EngineSim simReserved;
+    EngineSynth synthV10(soundsynth::EngineSynthConfig{}, 0x42u);
+    EngineSynth synthV6(soundsynth::EngineSynthConfig{}, 0x42u);
+    EngineSynth synthReserved(soundsynth::EngineSynthConfig{}, 0x42u);
+
+    static int16_t a10[256 * 2];
+    static int16_t a6[256 * 2];
+    static int16_t ar[256 * 2];
+
+    VehicleState s;
+    s.armed = true;
+    s.failsafe = false;
+    s.throttlePercent = 80;
+    s.volume = 100;
+
+    bool differs = false;
+    uint32_t t = 0;
+    for (int i = 0; i < 60; ++i) {
+        t += 20;
+        s.soundProfile = 0;
+        feedFrame(monV10, s, t);
+        s.soundProfile = 1;
+        feedFrame(monV6, s, t);
+        s.soundProfile = 7; // reserved: must behave exactly like V10
+        feedFrame(monReserved, s, t);
+
+        simV10.update(t, monV10.state());
+        simV6.update(t, monV6.state());
+        simReserved.update(t, monReserved.state());
+        publishTick(synthV10, simV10.engine(), monV10.state());
+        publishTick(synthV6, simV6.engine(), monV6.state());
+        publishTick(synthReserved, simReserved.engine(), monReserved.state());
+
+        synthV10.render(a10, 256);
+        synthV6.render(a6, 256);
+        synthReserved.render(ar, 256);
+        for (int j = 0; j < 256 * 2; ++j) {
+            if (a10[j] != a6[j]) differs = true;
+            TEST_ASSERT_EQUAL_INT16(a10[j], ar[j]); // reserved == V10, sample-exact
+        }
+    }
+    TEST_ASSERT_TRUE(differs); // the wire byte really selected the V6
+
+    // Volume over the wire: same chain, volume 25 vs 100 -> strictly quieter
+    // but still audible; volume 0 -> converges to true silence.
+    Link2Monitor monQuiet;
+    EngineSim simQuiet;
+    EngineSynth synthQuiet(soundsynth::EngineSynthConfig{}, 0x42u);
+    s.soundProfile = 0;
+    s.volume = 25;
+    t = 0;
+    for (int i = 0; i < 60; ++i) {
+        t += 20;
+        feedFrame(monQuiet, s, t);
+        simQuiet.update(t, monQuiet.state());
+        publishTick(synthQuiet, simQuiet.engine(), monQuiet.state());
+        synthQuiet.render(a6, 256); // reuse the buffer
+    }
+    const int32_t quietPeak = blockPeak(a6, 256);
+    const int32_t loudPeak = blockPeak(a10, 256); // the volume-100 V10 run above
+    TEST_ASSERT_TRUE(quietPeak > 0);
+    TEST_ASSERT_TRUE(quietPeak < loudPeak);
+
+    Link2Monitor monMute;
+    EngineSim simMute;
+    EngineSynth synthMute(soundsynth::EngineSynthConfig{}, 0x42u);
+    s.volume = 0;
+    t = 0;
+    for (int i = 0; i < 60; ++i) {
+        t += 20;
+        feedFrame(monMute, s, t);
+        simMute.update(t, monMute.state());
+        publishTick(synthMute, simMute.engine(), monMute.state());
+        synthMute.render(ar, 256);
+    }
+    TEST_ASSERT_EQUAL_INT32(0, blockPeak(ar, 256)); // engine RUNNING, yet silent
+    TEST_ASSERT_EQUAL(Ignition::Running, simMute.engine().ignition);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_full_chain_arm_drive_then_link_loss);
     RUN_TEST(test_full_drive_script_produces_audible_sound);
+    RUN_TEST(test_wire_profile_and_volume_reach_the_synth);
     return UNITY_END();
 }
