@@ -21,6 +21,11 @@ constexpr Rgb kIgnitionCyan{0, 255, 230};  // comet head + fire-up flash
 constexpr Rgb kIgnitionTrail{0, 90, 80};   // comet trail, one pixel behind
 constexpr Rgb kIgnitionTrail2{0, 45, 40};  // fading tail, two pixels behind
 
+// DRS-open tell (vision 16): pure green, the TV-graphics / sim-racing "DRS
+// open" color -- the only green anywhere in this palette, so it reads
+// unambiguously.
+constexpr Rgb kDrsGreen{0, 255, 0};
+
 // The static power budget in LightConfig::valid() models the worst case as
 // every LED at TWO FULL primaries (the "all-amber hazard" allowance:
 // 2 * 20 mA scaled by the cap). That model stays a true upper bound only
@@ -37,6 +42,7 @@ static_assert(channelSum(kIgnitionCyan) <= kBudgetModelChannelSum,
 static_assert(channelSum(kIgnitionTrail) <= kBudgetModelChannelSum, "trail exceeds budget model");
 static_assert(channelSum(kIgnitionTrail2) <= kBudgetModelChannelSum, "trail exceeds budget model");
 static_assert(channelSum(kTeal) <= kBudgetModelChannelSum, "halo teal exceeds budget model");
+static_assert(channelSum(kDrsGreen) <= kBudgetModelChannelSum, "DRS green exceeds budget model");
 
 // Gamma-2.2 LUT (WS2812 look linear-perceptual). Built once.
 struct GammaLut {
@@ -193,6 +199,26 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
             }
         }
         fill(px, config_.halo, haloColor);
+    }
+
+    // --- DRS-open tell (vision 16): the OUTERMOST pixels of the rear brake
+    // bar glow steady green while board #1's arbitrated drsOpen bit is set.
+    // Mapping rationale: the DRS flap lives in the rear wing, so the tell
+    // belongs on the rear bar; the two edge pixels read as the flap "opening
+    // outward" while the bar's middle keeps the dim tail; steady-not-blinking
+    // keeps it subtle next to the blinking signals. Drawn BEFORE the brake
+    // layer, so a braking car shows a full bright-red bar -- the tell can
+    // never mask the brake light (and the hazard early-return above already
+    // outranks everything). ---
+    if (state.drsOpen && config_.brake.len > 0) {
+        const uint8_t first = config_.brake.start;
+        const uint8_t last = static_cast<uint8_t>(config_.brake.start + config_.brake.len - 1);
+        if (first < kNumPixels) {
+            px[first] = kDrsGreen;
+        }
+        if (last < kNumPixels) {
+            px[last] = kDrsGreen;
+        }
     }
 
     // --- Low-battery: slow red pulse on the halo (alert layer). ---

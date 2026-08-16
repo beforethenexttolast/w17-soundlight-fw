@@ -38,6 +38,7 @@ const char* buildState(uint32_t t, link2::VehicleState& s) {
     if (t < 6000) {
         s.throttlePercent = triangle(t - 2000, 2000, 100);
         s.gear = static_cast<uint8_t>(1 + (t - 2000) / 1000); // climb gears
+        s.drsOpen = s.throttlePercent > 70; // flap open on the "straights"
         return "DRIVING";
     }
     if (t < 8000) {

@@ -56,6 +56,7 @@ void test_failsafe_hazard_overrides_everything() {
     Rgb px[kNumPixels];
     VehicleState s = upState();
     s.braking = true; // would normally light the brake
+    s.drsOpen = true; // would normally light the green tell
     s.failsafe = true;
 
     // At the on-phase of the hazard blink, all pixels are amber (R>0,G>0,B=0).
@@ -181,6 +182,50 @@ void test_brake_lights_on_braking() {
     r.render(s, light_status::Up, kIgnOff, 0, px);
     const Rgb brake = segFirst(px, cfg.brake);
     TEST_ASSERT_TRUE(brake.r > brake.g && brake.r > brake.b); // dominant red
+}
+
+// --- DRS-open tell (vision decision 16) -------------------------------------
+//
+// While board #1's arbitrated drsOpen bit is set, the two OUTERMOST pixels of
+// the rear brake bar glow steady green (the flap is in the rear wing; green
+// is the TV-graphics DRS color); the bar's middle keeps the dim tail.
+
+void test_drs_open_lights_green_bar_edges() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s = upState();
+    s.drsOpen = true;
+    r.render(s, light_status::Up, kIgnOff, 0, px);
+
+    const Rgb first = px[cfg.brake.start];
+    const Rgb last = px[cfg.brake.start + cfg.brake.len - 1];
+    TEST_ASSERT_TRUE(first.g > 0 && first.r == 0 && first.b == 0); // pure green
+    TEST_ASSERT_TRUE(last.g > 0 && last.r == 0 && last.b == 0);
+    // Middle of the bar keeps the dim red tail (the tell is edges-only).
+    const Rgb mid = px[cfg.brake.start + 2];
+    TEST_ASSERT_TRUE(mid.r > 0 && mid.g == 0);
+
+    // DRS closed: no green anywhere on the bar.
+    s.drsOpen = false;
+    r.render(s, light_status::Up, kIgnOff, 0, px);
+    for (uint8_t i = 0; i < cfg.brake.len; ++i) {
+        TEST_ASSERT_TRUE(px[cfg.brake.start + i].g == 0);
+    }
+}
+
+void test_drs_tell_never_masks_brake_light() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s = upState();
+    s.drsOpen = true;
+    s.braking = true;
+    r.render(s, light_status::Up, kIgnOff, 0, px);
+
+    // Braking wins the whole bar: every pixel bright red, zero green.
+    for (uint8_t i = 0; i < cfg.brake.len; ++i) {
+        const Rgb p = px[cfg.brake.start + i];
+        TEST_ASSERT_TRUE(p.r > 0 && p.g == 0 && p.b == 0);
+    }
 }
 
 void test_indicator_hysteresis_and_selfcancel() {
@@ -450,6 +495,8 @@ int main(int, char**) {
     RUN_TEST(test_never_connected_grace_measured_from_first_render);
     RUN_TEST(test_never_connected_grace_validation_bounds);
     RUN_TEST(test_brake_lights_on_braking);
+    RUN_TEST(test_drs_open_lights_green_bar_edges);
+    RUN_TEST(test_drs_tell_never_masks_brake_light);
     RUN_TEST(test_indicator_hysteresis_and_selfcancel);
     RUN_TEST(test_rain_light_flashes_only_while_harvesting_in_ers_mode);
     RUN_TEST(test_rain_light_ignores_deploy_only);

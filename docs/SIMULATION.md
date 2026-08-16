@@ -9,8 +9,8 @@ strip, and open the serial monitor (115200) to watch the phase narration.
 
 | t (s) | phase | sound | lights |
 |---|---|---|---|
-| 0–2 | IDLE | starter crank → idle | halo teal (armed) |
-| 2–6 | DRIVING | revs sweep, gears climb | — |
+| 0–2 | IDLE | starter crank → idle | crank comet sweep, fire-up flash → halo teal (armed) |
+| 2–6 | DRIVING | revs sweep, gears climb | DRS tell: rear-bar edge pixels green above ~70% throttle |
 | 6–8 | ERS_DEPLOY | ERS whine layer over the engine | — |
 | 8–9.5 | BRAKE_HARVEST | engine drops, overrun crackle | brake bar + rain light flashing (harvest) |
 | 9.5–11 | CORNERING | part-throttle | indicators sweep L/R |

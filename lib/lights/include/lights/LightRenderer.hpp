@@ -26,7 +26,7 @@ struct Segment {
 struct LightConfig {
     // Strip layout (bench-tune to the physical build). Overlaps are allowed;
     // the compositor's priority order decides who wins a shared pixel.
-    Segment brake{0, 6};       // rear brake bar
+    Segment brake{0, 6};       // rear brake bar (its 2 edge pixels double as the DRS tell)
     Segment rainLight{6, 2};   // F1 rain light (flashes while ERS harvesting)
     Segment halo{8, 14};       // halo ring
     Segment leftIndicator{22, 4};
@@ -112,7 +112,9 @@ struct LightConfig {
 // fire-up crossfade are deterministic in tests.
 //
 // Priority (low to high, later overrides): base (halo incl. the ignition-on
-// animation + dim tail) -> functional (brake, indicators, rain) -> alert
+// animation + dim tail) -> DRS-open tell (steady green on the rear bar's two
+// edge pixels) -> functional (brake, indicators, rain; the brake overwrite is
+// what keeps the DRS tell from ever masking the brake light) -> alert
 // (low-battery halo pulse) -> FAILSAFE hazard (all amber, overrides
 // everything).
 class LightRenderer {
