@@ -51,6 +51,15 @@ struct LightConfig {
     // How recently ersPercent must have risen to count as "harvesting".
     uint16_t harvestWindowMs = 400;
 
+    // NeverConnected grace window: how long the calm "waiting for board #1"
+    // breathe may run (measured from the first NeverConnected render) before
+    // an empty link escalates to the hazard pattern. Both boards power from
+    // the same UBEC rail (docs/link2_protocol.md), so a healthy boot delivers
+    // the first frame within a couple of seconds; once this window expires
+    // with no frame EVER received, the link is a broken/unplugged harness and
+    // must look like one, not breathe calmly forever (audit defect 9).
+    uint32_t neverConnectedGraceMs = 5000;
+
     // Worst-case current budget: every LED at the brightness cap, all three
     // primaries. WS2812 ~ 20mA/channel at full; scale by cap. Kept well
     // under the 5A rail; hazard (single amber color) is the real worst case.
@@ -64,13 +73,19 @@ struct LightConfig {
                // >= 2 so the pulse half-period (period / 2) is never 0 -- the
                // renderer divides the triangle by it (LightRenderer.cpp).
                lowBatteryPeriodMs >= 2 &&
+               // Lower bound: must outlast normal same-rail power-up skew so a
+               // healthy boot never flashes hazard. Upper bound: a genuinely
+               // dead link must be signaled while someone is still looking at
+               // the car (giftee operator model).
+               neverConnectedGraceMs >= 1000 && neverConnectedGraceMs <= 30000 &&
                (perLedMa * kNumPixels) <= kBudgetMilliamps;
     }
 };
 
 // Pure compositor: (effective VehicleState, LinkStatus, nowMs) -> pixels[N].
-// Stateful only for indicator hysteresis + harvest edge detection; time is
-// caller-supplied so blink phase and self-cancel are deterministic in tests.
+// Stateful only for indicator hysteresis, harvest edge detection and the
+// never-connected grace seed; time is caller-supplied so blink phase,
+// self-cancel and the grace escalation are deterministic in tests.
 //
 // Priority (low to high, later overrides): base (halo + dim tail) ->
 // functional (brake, indicators, rain) -> alert (low-battery halo pulse) ->
@@ -96,6 +111,13 @@ private:
     uint8_t lastErsPercent_ = 0;
     uint32_t lastHarvestMs_ = 0;
     bool harvestSeeded_ = false;
+
+    // NeverConnected grace: timestamp of the first render seen while no frame
+    // has ever arrived (wrap-safe start+flag pattern, same as enginesim's
+    // event windows). Once the link has been Up this state is unreachable
+    // again, so the seed never needs resetting.
+    bool graceSeeded_ = false;
+    uint32_t graceStartMs_ = 0;
 };
 
 } // namespace lights

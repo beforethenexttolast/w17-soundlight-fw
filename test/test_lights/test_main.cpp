@@ -85,6 +85,86 @@ void test_never_connected_is_calm_not_hazard() {
     TEST_ASSERT_FALSE(anyAmber);
 }
 
+namespace {
+
+// True when every pixel is the hazard amber (R>0, G>0, B==0).
+bool allAmber(Rgb* px) {
+    for (uint8_t i = 0; i < kNumPixels; ++i) {
+        if (!(px[i].r > 0 && px[i].g > 0 && px[i].b == 0)) return false;
+    }
+    return true;
+}
+
+// True when no pixel shows the hazard amber signature.
+bool noAmber(Rgb* px) {
+    for (uint8_t i = 0; i < kNumPixels; ++i) {
+        if (px[i].r > 0 && px[i].g > 0 && px[i].b == 0) return false;
+    }
+    return true;
+}
+
+} // namespace
+
+// Audit defect 9: a wire cut BEFORE the first frame used to breathe calm teal
+// forever. Now the calm breathe holds only for neverConnectedGraceMs after the
+// first render, then escalates to the exact hazard pattern a Lost link shows.
+void test_never_connected_escalates_to_hazard_after_grace() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s; // NeverConnected effective state = all-safe defaults
+
+    // Inside the grace window: calm, never amber.
+    r.render(s, light_status::NeverConnected, 0, px); // seeds the grace start
+    TEST_ASSERT_TRUE(noAmber(px));
+    r.render(s, light_status::NeverConnected, cfg.neverConnectedGraceMs - 1, px);
+    TEST_ASSERT_TRUE(noAmber(px));
+
+    // At exactly the grace boundary: hazard (boundary is inclusive-stale, the
+    // same convention as the monitor's staleness compare). Sample an on-phase
+    // and an off-phase of the blink to prove it is the BLINKING hazard, not a
+    // recolored breathe.
+    const uint32_t tOn = cfg.neverConnectedGraceMs; // grace % hazardPeriod == 0 -> on
+    r.render(s, light_status::NeverConnected, tOn, px);
+    TEST_ASSERT_TRUE(allAmber(px));
+    r.render(s, light_status::NeverConnected, tOn + cfg.hazardPeriodMs / 2, px);
+    for (uint8_t i = 0; i < kNumPixels; ++i) {
+        TEST_ASSERT_TRUE(px[i] == (Rgb{0, 0, 0}));
+    }
+}
+
+// The grace window is measured from the FIRST render, not from absolute time
+// zero -- a board whose clock is already far along must still get its full
+// calm window.
+void test_never_connected_grace_measured_from_first_render() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s;
+
+    const uint32_t t0 = 100000; // well past the grace length in absolute time
+    r.render(s, light_status::NeverConnected, t0, px); // seed here
+    TEST_ASSERT_TRUE(noAmber(px));
+    r.render(s, light_status::NeverConnected, t0 + cfg.neverConnectedGraceMs - 1, px);
+    TEST_ASSERT_TRUE(noAmber(px));
+    r.render(s, light_status::NeverConnected, t0 + cfg.neverConnectedGraceMs, px);
+    TEST_ASSERT_TRUE(allAmber(px));
+}
+
+// Pins the grace-window validation band: long enough that a healthy same-rail
+// power-up never flashes hazard, short enough that a dead harness is signaled
+// while someone is still looking at the car.
+void test_never_connected_grace_validation_bounds() {
+    LightConfig c;
+    c.neverConnectedGraceMs = 999;
+    TEST_ASSERT_FALSE(c.valid());
+    c.neverConnectedGraceMs = 1000;
+    TEST_ASSERT_TRUE(c.valid());
+    c.neverConnectedGraceMs = 30000;
+    TEST_ASSERT_TRUE(c.valid());
+    c.neverConnectedGraceMs = 30001;
+    TEST_ASSERT_FALSE(c.valid());
+    TEST_ASSERT_TRUE(LightConfig{}.valid()); // default stays valid
+}
+
 void test_brake_lights_on_braking() {
     LightRenderer r;
     Rgb px[kNumPixels];
@@ -232,6 +312,9 @@ int main(int, char**) {
     RUN_TEST(test_failsafe_hazard_overrides_everything);
     RUN_TEST(test_link_lost_forces_hazard_even_if_frame_not_failsafe);
     RUN_TEST(test_never_connected_is_calm_not_hazard);
+    RUN_TEST(test_never_connected_escalates_to_hazard_after_grace);
+    RUN_TEST(test_never_connected_grace_measured_from_first_render);
+    RUN_TEST(test_never_connected_grace_validation_bounds);
     RUN_TEST(test_brake_lights_on_braking);
     RUN_TEST(test_indicator_hysteresis_and_selfcancel);
     RUN_TEST(test_rain_light_flashes_only_while_harvesting_in_ers_mode);

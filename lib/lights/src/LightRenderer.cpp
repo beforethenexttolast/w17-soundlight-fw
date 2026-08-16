@@ -60,25 +60,43 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
         px[i] = kOff;
     }
 
-    const bool localFailsafe = state.failsafe || link == link2monitor::LinkStatus::Lost;
     const bool neverConnected = link == link2monitor::LinkStatus::NeverConnected;
 
-    // --- Never connected: a distinct "waiting" breathe for the first while,
-    // escalating to hazard is handled by the caller/monitor status; here we
-    // simply show the calm waiting animation (a genuine cut wire reads as
-    // Lost -> hazard below, not NeverConnected forever on a powered link). ---
+    // --- Never connected: a distinct calm "waiting" breathe, but only inside
+    // a bounded grace window measured from the first NeverConnected render.
+    // A wire cut AFTER the first good frame reads as Lost (hazard below)
+    // within the 500 ms staleness rule -- but a wire cut or never-plugged
+    // harness BEFORE any frame keeps the monitor in NeverConnected forever,
+    // so once the grace expires with still no frame ever received we
+    // escalate to the same hazard pattern a Lost link shows (audit defect 9).
+    // Inside the window the sound side is already failsafe-equivalent (the
+    // monitor's effective state is all-safe defaults, engine Off/silent);
+    // only the hazard BLINK is deferred, so a normal same-rail power-up
+    // breathes calmly instead of flashing hazard while board #1 boots. ---
+    bool neverConnectedExpired = false;
     if (neverConnected) {
-        const uint32_t phase = nowMs % 2000;
-        const uint32_t tri = phase < 1000 ? phase : (2000 - phase); // 0..1000..0
-        const uint8_t lvl = static_cast<uint8_t>(tri * 255 / 1000);
-        Rgb breathe{static_cast<uint8_t>(lvl / 6), static_cast<uint8_t>(lvl / 3),
-                    static_cast<uint8_t>(lvl / 3)};
-        fill(px, config_.halo, breathe);
-        for (uint8_t i = 0; i < kNumPixels; ++i) {
-            outPixels[i] = applyBrightnessAndGamma(px[i], config_.maxBrightness);
+        if (!graceSeeded_) {
+            graceSeeded_ = true;
+            graceStartMs_ = nowMs;
         }
-        return;
+        neverConnectedExpired =
+            static_cast<uint32_t>(nowMs - graceStartMs_) >= config_.neverConnectedGraceMs;
+        if (!neverConnectedExpired) {
+            const uint32_t phase = nowMs % 2000;
+            const uint32_t tri = phase < 1000 ? phase : (2000 - phase); // 0..1000..0
+            const uint8_t lvl = static_cast<uint8_t>(tri * 255 / 1000);
+            Rgb breathe{static_cast<uint8_t>(lvl / 6), static_cast<uint8_t>(lvl / 3),
+                        static_cast<uint8_t>(lvl / 3)};
+            fill(px, config_.halo, breathe);
+            for (uint8_t i = 0; i < kNumPixels; ++i) {
+                outPixels[i] = applyBrightnessAndGamma(px[i], config_.maxBrightness);
+            }
+            return;
+        }
     }
+
+    const bool localFailsafe =
+        state.failsafe || link == link2monitor::LinkStatus::Lost || neverConnectedExpired;
 
     // --- FAILSAFE hazard: all amber blink, overrides everything. ---
     if (localFailsafe) {
