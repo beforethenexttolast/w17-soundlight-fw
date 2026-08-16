@@ -4,8 +4,9 @@ Companion firmware to `w17-control-fw` (ESP32 #1) for the 1/10 FPV Mercedes W17 
 This board consumes the one-way **link2** UART stream from board #1 and produces:
 - **Engine sound** via I2S → MAX98357A → 4Ω 3W speaker (procedural V10-flavored synthesis;
   a PCM sample player can drop in later behind the same `ISampleSource` seam).
-- **WS2812 lights** (30-LED strip): brake, turn indicators, halo, F1 rain light (flashes
-  while ERS is *harvesting*), low-battery pulse, failsafe hazard.
+- **WS2812 lights** (30-LED strip): brake, turn indicators, halo, ignition-on animation,
+  DRS-open tell, F1 rain light (flashes while ERS is *harvesting*), low-battery pulse,
+  failsafe hazard.
 
 Input protocol: `docs/link2_protocol.md` (copied from the control repo, which owns it).
 Receiver obligations from that doc are MANDATORY here: hard-reject unsupported length
@@ -50,9 +51,14 @@ pin header.
 - `lib/soundsynth` — `ISampleSource` seam + `EngineSynth`: wavetable partial stack at the
   firing frequency (default 5 firings/rev = V10 flavor, range 3500–15000 rpm — chosen so
   the fundamental sits in a small speaker's band), per-rev AM, throttle-correlated noise,
-  pitch-tracking ERS whine, param smoothing. Deterministic (seeded LFSR noise).
-- `lib/lights` — pure compositor: base → brake/indicators/rain → low-battery → failsafe
-  hazard override; gamma LUT; brightness cap with a static power budget in `valid()`.
+  pitch-tracking ERS whine, param smoothing. Deterministic (seeded LFSR noise). Named
+  voice profiles in `SynthProfiles.hpp` (V10 = compile-time default, V6 turbo-hybrid);
+  the selection mechanism is an open owner decision — do not add one unilaterally.
+- `lib/lights` — pure compositor: base (halo incl. ignition-on animation) → DRS tell →
+  brake/indicators/rain → low-battery → failsafe hazard override; never-connected shows a
+  calm breathe for a bounded grace window, then escalates to hazard; gamma LUT; brightness
+  cap with a static power budget in `valid()` (halo-capable colors are static_assert-pinned
+  to the two-primary worst case that budget models).
 - `lib/audio_hal_esp32` / `lib/lights_hal_esp32` — legacy IDF i2s driver (stereo-duplicated
   mono) and Adafruit NeoPixel behind `ILedStrip`.
 
