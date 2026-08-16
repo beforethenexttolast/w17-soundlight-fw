@@ -203,7 +203,11 @@ void loop() {
     if (nowMs - lastLightsMs >= kLightsPeriodMs) {
         lastLightsMs = nowMs;
         lights::Rgb px[lights::kNumPixels];
-        lightRenderer.render(monitor.state(), monitor.status(), nowMs, px);
+        // Ignition comes from the same core-1 EngineSim the control tick
+        // updates (the lights animation must key off the real ignition state
+        // machine, never re-derive it from `armed`).
+        lightRenderer.render(monitor.state(), monitor.status(), engine.engine().ignition, nowMs,
+                             px);
         for (uint8_t i = 0; i < lights::kNumPixels; ++i) {
             strip.setPixel(i, px[i].r, px[i].g, px[i].b);
         }

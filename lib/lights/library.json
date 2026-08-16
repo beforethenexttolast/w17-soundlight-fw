@@ -1,11 +1,12 @@
 {
   "name": "lights",
   "version": "0.1.0",
-  "description": "Pure WS2812 compositor: brake, indicators, halo, ERS-harvest rain light, low-battery, failsafe hazard. Gamma LUT + static power budget.",
+  "description": "Pure WS2812 compositor: brake, indicators, halo, ignition-on animation, ERS-harvest rain light, low-battery, failsafe hazard. Gamma LUT + static power budget.",
   "frameworks": "*",
   "platforms": "*",
   "dependencies": {
     "link2": "*",
-    "link2monitor": "*"
+    "link2monitor": "*",
+    "enginesim": "*"
   }
 }

@@ -13,6 +13,31 @@ constexpr Rgb kAmber{255, 90, 0};
 constexpr Rgb kWhite{255, 255, 255};
 constexpr Rgb kOff{0, 0, 0};
 
+// Ignition-on animation palette (vision 16): the whole fire-up sequence stays
+// in the Petronas teal family -- bright cyan comet/flash settling into the
+// armed teal -- so it can never be mistaken for amber hazard/indicators or
+// red brake/low-battery.
+constexpr Rgb kIgnitionCyan{0, 255, 230};  // comet head + fire-up flash
+constexpr Rgb kIgnitionTrail{0, 90, 80};   // comet trail, one pixel behind
+constexpr Rgb kIgnitionTrail2{0, 45, 40};  // fading tail, two pixels behind
+
+// The static power budget in LightConfig::valid() models the worst case as
+// every LED at TWO FULL primaries (the "all-amber hazard" allowance:
+// 2 * 20 mA scaled by the cap). That model stays a true upper bound only
+// while no color that can cover the 14-pixel halo exceeds a channel sum of
+// 2 * 255 -- pin it here so a palette tweak cannot silently invalidate the
+// budget arithmetic. (The 3-primary rain-light white predates this rule; at
+// 2 pixels it is covered by the halo colors sitting under the model bound.)
+constexpr int channelSum(Rgb c) {
+    return static_cast<int>(c.r) + static_cast<int>(c.g) + static_cast<int>(c.b);
+}
+constexpr int kBudgetModelChannelSum = 2 * 255; // two full primaries per LED
+static_assert(channelSum(kIgnitionCyan) <= kBudgetModelChannelSum,
+              "halo-wide ignition color exceeds the two-primary budget model");
+static_assert(channelSum(kIgnitionTrail) <= kBudgetModelChannelSum, "trail exceeds budget model");
+static_assert(channelSum(kIgnitionTrail2) <= kBudgetModelChannelSum, "trail exceeds budget model");
+static_assert(channelSum(kTeal) <= kBudgetModelChannelSum, "halo teal exceeds budget model");
+
 // Gamma-2.2 LUT (WS2812 look linear-perceptual). Built once.
 struct GammaLut {
     uint8_t v[256];
@@ -35,6 +60,17 @@ Rgb applyBrightnessAndGamma(Rgb c, uint8_t maxBrightness) {
     return Rgb{ch(c.r), ch(c.g), ch(c.b)};
 }
 
+// Channel-wise linear crossfade `from` -> `to` at num/den (num < den, den > 0
+// by LightConfig::valid()). Integer math; both endpoints are exact.
+Rgb blendToward(Rgb from, Rgb to, uint32_t num, uint32_t den) {
+    auto ch = [&](uint8_t f, uint8_t t) {
+        const int32_t d = static_cast<int32_t>(t) - static_cast<int32_t>(f);
+        return static_cast<uint8_t>(static_cast<int32_t>(f) +
+                                    d * static_cast<int32_t>(num) / static_cast<int32_t>(den));
+    };
+    return Rgb{ch(from.r, to.r), ch(from.g, to.g), ch(from.b, to.b)};
+}
+
 } // namespace
 
 LightRenderer::LightRenderer(LightConfig config) : config_(config) {}
@@ -54,7 +90,8 @@ bool LightRenderer::blinkOn(uint32_t nowMs, uint16_t periodMs) const {
 }
 
 void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkStatus link,
-                           uint32_t nowMs, Rgb outPixels[kNumPixels]) {
+                           enginesim::Ignition ignition, uint32_t nowMs,
+                           Rgb outPixels[kNumPixels]) {
     Rgb px[kNumPixels];
     for (uint8_t i = 0; i < kNumPixels; ++i) {
         px[i] = kOff;
@@ -107,9 +144,56 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
         return;
     }
 
-    // --- Base layer: halo (teal armed / dim white disarmed) + dim red tail. ---
+    // --- Ignition-on animation bookkeeping (vision 16). The fire-up flash
+    // triggers on entering Running; detection lives in the normal path only,
+    // which is safe because enginesim can neither reach nor stay in Running
+    // under failsafe (armed is forced false), so no transition can hide
+    // behind the early returns above. ---
+    if (ignition == enginesim::Ignition::Running &&
+        lastIgnition_ != enginesim::Ignition::Running) {
+        flashStartMs_ = nowMs;
+        flashActive_ = true;
+    }
+    lastIgnition_ = ignition;
+    if (ignition != enginesim::Ignition::Running) {
+        flashActive_ = false; // disarm/failsafe mid-flash cancels it
+    }
+
+    // --- Base layer: dim red tail + halo. The halo carries the ignition-on
+    // animation: Cranking = starter comet sweep; first ignitionFlashMs of
+    // Running = bright-cyan flash crossfading into the armed teal; otherwise
+    // teal armed / dim white disarmed. Alerts still overwrite all of it. ---
     fill(px, config_.brake, kDimRed);
-    fill(px, config_.halo, state.armed ? kTeal : kDimWhite);
+    if (ignition == enginesim::Ignition::Cranking && config_.halo.len > 0) {
+        // Free-running comet: the head walks the halo once per period, with a
+        // two-pixel trail behind it (wrapping inside the halo segment).
+        const uint32_t phase = nowMs % config_.ignitionSweepPeriodMs;
+        const uint8_t head =
+            static_cast<uint8_t>(phase * config_.halo.len / config_.ignitionSweepPeriodMs);
+        auto haloPx = [&](uint8_t offset, Rgb c) {
+            const uint8_t idx = static_cast<uint8_t>(
+                config_.halo.start + (offset % config_.halo.len));
+            if (idx < kNumPixels) {
+                px[idx] = c;
+            }
+        };
+        haloPx(head, kIgnitionCyan);
+        haloPx(static_cast<uint8_t>(head + config_.halo.len - 1), kIgnitionTrail);
+        haloPx(static_cast<uint8_t>(head + config_.halo.len - 2), kIgnitionTrail2);
+    } else {
+        Rgb haloColor = state.armed ? kTeal : kDimWhite;
+        if (flashActive_) {
+            // Wrap-safe window; expiry clears the flag so elapsed can never
+            // wrap back below the duration and phantom-reopen.
+            const uint32_t elapsed = nowMs - flashStartMs_;
+            if (elapsed >= config_.ignitionFlashMs) {
+                flashActive_ = false;
+            } else {
+                haloColor = blendToward(kIgnitionCyan, kTeal, elapsed, config_.ignitionFlashMs);
+            }
+        }
+        fill(px, config_.halo, haloColor);
+    }
 
     // --- Low-battery: slow red pulse on the halo (alert layer). ---
     if (state.lowBattery) {

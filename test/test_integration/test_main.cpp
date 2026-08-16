@@ -81,7 +81,7 @@ void test_full_chain_arm_drive_then_link_loss() {
         // Render a couple of audio blocks per control tick (audio runs faster).
         synth.render(audio, 256);
         synth.render(audio, 256);
-        lights.render(mon.state(), mon.status(), t, px);
+        lights.render(mon.state(), mon.status(), sim.engine().ignition, t, px);
     }
 
     TEST_ASSERT_EQUAL(LinkStatus::Up, mon.status());
@@ -100,7 +100,7 @@ void test_full_chain_arm_drive_then_link_loss() {
         synth.setParams(e.engineRpm, volumeFor(e), e.ersWhine, e.limiterActive, e.overrunActive);
         synth.render(audio, 256);
         synth.render(audio, 256);
-        lights.render(mon.state(), mon.status(), t, px);
+        lights.render(mon.state(), mon.status(), sim.engine().ignition, t, px);
     }
 
     TEST_ASSERT_EQUAL(LinkStatus::Lost, mon.status());
@@ -110,9 +110,9 @@ void test_full_chain_arm_drive_then_link_loss() {
     TEST_ASSERT_EQUAL_INT32(0, blockPeak(audio, 256));
 
     // Lights are in hazard (all amber at the on-phase). Find an on-phase.
-    lights.render(mon.state(), mon.status(), 0, px);
+    lights.render(mon.state(), mon.status(), sim.engine().ignition, 0, px);
     bool amber = px[0].r > 0 && px[0].g > 0 && px[0].b == 0;
-    lights.render(mon.state(), mon.status(), 250, px); // off-phase
+    lights.render(mon.state(), mon.status(), sim.engine().ignition, 250, px); // off-phase
     bool off = (px[0] == Rgb{0, 0, 0});
     TEST_ASSERT_TRUE(amber && off);
 }
@@ -145,7 +145,7 @@ void test_full_drive_script_produces_audible_sound() {
         const auto& e = sim.engine();
         synth.setParams(e.engineRpm, volumeFor(e), e.ersWhine, e.limiterActive, e.overrunActive);
         synth.render(audio, 256);
-        lights.render(mon.state(), mon.status(), t, px);
+        lights.render(mon.state(), mon.status(), sim.engine().ignition, t, px);
         const int32_t p = blockPeak(audio, 256);
         if (p > scriptPeak) scriptPeak = p;
     }
