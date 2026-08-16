@@ -31,6 +31,8 @@ VehicleState driving() {
     s.batteryMv = 7100;
     s.ersPercent = 55;
     s.driveMode = 2;
+    s.soundProfile = link2::kSoundProfileV6Hybrid; // v2 operator config
+    s.volume = 25;                                 // non-default on purpose
     return s;
 }
 
@@ -88,6 +90,11 @@ void test_per_field_staleness_projection() {
     TEST_ASSERT_EQUAL_UINT8(3, s.gear);       // holding gear avoids phantom shift blips
     TEST_ASSERT_EQUAL_UINT8(55, s.ersPercent);
     TEST_ASSERT_EQUAL_UINT8(2, s.driveMode);
+    // v2 operator config held too: silencing comes from the failsafe flag
+    // (which always wins over volume), so holding these avoids a
+    // voice/volume glitch on recovery.
+    TEST_ASSERT_EQUAL_UINT8(link2::kSoundProfileV6Hybrid, s.soundProfile);
+    TEST_ASSERT_EQUAL_UINT8(25, s.volume);
 }
 
 void test_recovers_on_next_good_frame() {

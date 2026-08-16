@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// link2 wire protocol v1: control board (ESP32 #1) -> sound/light board
+// link2 wire protocol v2: control board (ESP32 #1) -> sound/light board
 // (ESP32 #2), one-way UART, 115200 8N1, nominal 20 Hz.
 //
 // Frame: [0]=start 0xA5 | [1]=length (payload bytes) | [2..2+len)=payload | [last]=crc8
@@ -13,8 +13,8 @@
 //     (engine to idle, hazard blink) -- on a one-way link a cut wire is
 //     otherwise indistinguishable from "last state persists".
 //
-// Payload v1 (all multi-byte fields little-endian):
-//   [0] version = 1
+// Payload v2 (all multi-byte fields little-endian):
+//   [0] version = 2
 //   [1] throttlePercent  int8 -100..100, what the ESC is ACTUALLY commanded
 //                        (0 while disarmed/failsafe, incl. ERS boost), so
 //                        engine sound tracks the motor, not the stick
@@ -29,14 +29,25 @@
 //   [7-8] batteryMv      uint16, 2S pack millivolts
 //   [9] ersPercent       0..100, ERS energy store
 //   [10] driveMode       0 = TRAINING, 1 = RACE (gearbox), 2 = ERS (gearbox+ERS deploy)
+//   [11] soundProfile    engine voice: 0 = V10 (default), 1 = V6 turbo-hybrid;
+//                        values >= kSoundProfileCount reserved -- receivers
+//                        fall back to 0 (V10), never reject the frame
+//   [12] volume          0..100 engine-sound level; 0 = TRUE silence, receivers
+//                        clamp >100 to 100; scales sound only, never lights
+//
+// v1 -> v2 (2026-08-17): appended soundProfile + volume (vision decision 15).
+// Same framing/CRC; length byte 11 -> 13, version byte 1 -> 2. Because
+// receivers hard-reject unsupported length bytes, a version-mismatched pair
+// of boards is safe but non-functional (permanent staleness failsafe), so
+// BOTH boards must be flashed together -- there is no mixed-version interop.
 //
 // Full spec with a worked example: docs/link2_protocol.md.
 
 namespace link2 {
 
 inline constexpr uint8_t kStartByte = 0xA5;
-inline constexpr uint8_t kProtocolVersion = 1;
-inline constexpr size_t kPayloadLen = 11;
+inline constexpr uint8_t kProtocolVersion = 2;
+inline constexpr size_t kPayloadLen = 13;
 inline constexpr size_t kFrameLen = 3 + kPayloadLen; // start + length + payload + crc
 
 // Flag bit positions (payload byte [3]).
@@ -47,6 +58,22 @@ inline constexpr uint8_t kFlagArmed = 1u << 3;
 inline constexpr uint8_t kFlagFailsafe = 1u << 4;
 inline constexpr uint8_t kFlagLowBattery = 1u << 5;
 inline constexpr uint8_t kFlagErsDeploying = 1u << 6;
+
+// Sound profile wire values (payload byte [11], v2). kSoundProfileCount is
+// the receiver fallback boundary: any value >= it selects V10 -- a voice
+// fallback, NEVER a frame rejection -- so a receiver that predates a future
+// voice keeps making sound instead of going mute (mirrors driveMode's
+// treat-unknown-as-RACE rule).
+inline constexpr uint8_t kSoundProfileV10 = 0;      // default engine voice
+inline constexpr uint8_t kSoundProfileV6Hybrid = 1; // V6 turbo-hybrid voice
+inline constexpr uint8_t kSoundProfileCount = 2;    // first reserved value
+
+// Volume (payload byte [12], v2): 0..100 engine-sound level, 0 = TRUE
+// silence, receivers clamp >100 to 100. Default 80 -- loud enough to be the
+// showpiece out of the box, deliberately below full scale so "louder" stays
+// available on request instead of shipping the synth pinned at its peak.
+inline constexpr uint8_t kVolumeMax = 100;
+inline constexpr uint8_t kDefaultVolume = 80;
 
 struct VehicleState {
     int8_t throttlePercent = 0;
@@ -63,6 +90,8 @@ struct VehicleState {
     uint16_t batteryMv = 0;
     uint8_t ersPercent = 100; // store starts full
     uint8_t driveMode = 1;    // 0 TRAINING / 1 RACE (gearbox) / 2 ERS (gearbox+ERS)
+    uint8_t soundProfile = kSoundProfileV10; // v2: engine voice; >= kSoundProfileCount reserved
+    uint8_t volume = kDefaultVolume;         // v2: 0..100 sound level, 0 = true silence
 };
 
 enum class DecodeResult : uint8_t {

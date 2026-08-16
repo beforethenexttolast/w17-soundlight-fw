@@ -36,7 +36,9 @@ size_t encodeFrame(const VehicleState& state, uint8_t out[kFrameLen]) {
     out[10] = static_cast<uint8_t>(state.batteryMv >> 8);
     out[11] = state.ersPercent;
     out[12] = state.driveMode;
-    out[13] = computeCrc8(out + 1, 1 + kPayloadLen); // over [length + payload]
+    out[13] = state.soundProfile;
+    out[14] = state.volume;
+    out[15] = computeCrc8(out + 1, 1 + kPayloadLen); // over [length + payload]
     return kFrameLen;
 }
 
@@ -73,6 +75,12 @@ DecodeResult decodeFrame(const uint8_t* data, size_t len, VehicleState& out) {
     out.batteryMv = static_cast<uint16_t>(data[9] | (data[10] << 8));
     out.ersPercent = data[11];
     out.driveMode = data[12];
+    // Raw pass-through like driveMode: the CONSUMER applies the v2 semantic
+    // rules (soundProfile >= kSoundProfileCount falls back to V10, volume
+    // > kVolumeMax clamps to kVolumeMax) -- the codec never rejects or
+    // rewrites a CRC-valid value, so nothing decodable is lost here.
+    out.soundProfile = data[13];
+    out.volume = data[14];
     return DecodeResult::Ok;
 }
 

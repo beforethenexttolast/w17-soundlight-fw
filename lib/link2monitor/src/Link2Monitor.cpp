@@ -50,8 +50,14 @@ void Link2Monitor::recompute(uint32_t nowMs) {
     // Motion telemetry must not persist -- a stale rpm would drive the engine
     // sound and speed readout.
     effective_.rpm = 0;
-    // Held last-known (garnish / latched judgments): batteryMv, lowBattery,
-    // gear, ersPercent, driveMode -- left as copied from lastGood_.
+    // Held last-known (garnish / latched judgments / operator config):
+    // batteryMv, lowBattery, gear, ersPercent, driveMode, soundProfile,
+    // volume -- left as copied from lastGood_. The v2 sound pair is
+    // CONFIGURATION, not state: silencing on link loss comes from the
+    // failsafe flag above through the engine state machine and always wins
+    // over volume, so holding these avoids a voice/volume glitch on
+    // recovery. (NeverConnected still resets them to the wire defaults via
+    // VehicleState{}.)
 }
 
 } // namespace link2monitor
