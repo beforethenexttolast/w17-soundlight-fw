@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "soundsynth/EngineSynth.hpp"
+#include "soundsynth/SynthProfiles.hpp"
 
 using soundsynth::clampToInt16;
 using soundsynth::EngineSynth;
@@ -525,6 +526,82 @@ void test_renderer_volume_history_independent() {
     TEST_ASSERT_TRUE(nonSilent);
 }
 
+// --- Named voice profiles (vision decision 15 groundwork). Selection is an
+// open owner decision; these tests pin the profiles themselves: both valid,
+// genuinely distinct, the shipping default byte-for-byte the V10, and the V6
+// voice rendering deterministically inside the headroom budget. ---
+
+void test_profiles_valid_distinct_default_is_v10() {
+    using namespace soundsynth::profiles;
+    TEST_ASSERT_TRUE(v10().valid());
+    TEST_ASSERT_TRUE(v6TurboHybrid().valid());
+    TEST_ASSERT_TRUE(v10().peakSum() <= EngineSynthConfig::kHeadroomPeak);
+    TEST_ASSERT_TRUE(v6TurboHybrid().peakSum() <= EngineSynthConfig::kHeadroomPeak);
+
+    // The V10 IS the historical default voice; the default profile IS the V10.
+    TEST_ASSERT_TRUE(sameVoice(v10(), EngineSynthConfig{}));
+    TEST_ASSERT_TRUE(sameVoice(kDefault, v10()));
+
+    // The V6 is a real alternative, not a renamed V10.
+    TEST_ASSERT_FALSE(sameVoice(v10(), v6TurboHybrid()));
+    TEST_ASSERT_EQUAL_UINT8(3, v6TurboHybrid().firingsPerRev);
+    TEST_ASSERT_EQUAL_UINT8(5, v10().firingsPerRev);
+}
+
+// The V6 profile's firing count is audible fact, not just a field: strip the
+// voice down to its fundamental (keeping the profile's firingsPerRev) and the
+// rendered pitch must land at rpm/60*3 -- 600 Hz at 12000 rpm, vs the V10's
+// 1000 Hz pinned by test_pitch_matches_firing_frequency.
+void test_v6_profile_pitch_tracks_three_firings_per_rev() {
+    EngineSynthConfig cfg = soundsynth::profiles::v6TurboHybrid();
+    for (int i = 0; i < soundsynth::kMaxPartials; ++i) cfg.partialAmp[i] = 0;
+    cfg.partialAmp[0] = 200; // fundamental only, so zero-crossings count cleanly
+    cfg.noiseAmpMax = 0;
+    cfg.whineAmp = 0;
+    TEST_ASSERT_TRUE(cfg.valid());
+    EngineSynth synth(cfg);
+
+    synth.setParams(12000, 255, false, false, false);
+    const size_t oneSec = kSampleRateHz;
+    static int16_t buf[kSampleRateHz * 2];
+    synth.render(buf, oneSec);
+
+    const int crossings = countUpwardZeroCrossings(buf, oneSec);
+    // Same generous tolerance idea as the V10 pitch test (smoothing ramps rpm
+    // from 0), scaled to the lower target frequency.
+    TEST_ASSERT_INT_WITHIN(80, 600, crossings);
+}
+
+// Full V6 voice at max settings (redline, full volume, whine + overrun
+// crackle): deterministic given a seed, audibly non-silent, and inside the
+// documented headroom budget -- never touching the int16 rails.
+void test_v6_profile_deterministic_within_headroom() {
+    const EngineSynthConfig cfg = soundsynth::profiles::v6TurboHybrid();
+    EngineSynth a(cfg, 0xBEEFu);
+    EngineSynth b(cfg, 0xBEEFu);
+    a.setParams(15000, 255, /*whine=*/true, /*limiter=*/false, /*overrun=*/true);
+    b.setParams(15000, 255, /*whine=*/true, /*limiter=*/false, /*overrun=*/true);
+
+    static int16_t ba[1024 * 2];
+    static int16_t bb[1024 * 2];
+    int32_t peak = 0;
+    bool identical = true;
+    for (int block = 0; block < 100; ++block) {
+        a.render(ba, 1024);
+        b.render(bb, 1024);
+        for (int i = 0; i < 1024 * 2; ++i) {
+            if (ba[i] != bb[i]) identical = false;
+            const int32_t v = ba[i] < 0 ? -static_cast<int32_t>(ba[i])
+                                        : static_cast<int32_t>(ba[i]);
+            if (v > peak) peak = v;
+        }
+    }
+    TEST_ASSERT_TRUE(identical);
+    TEST_ASSERT_TRUE(peak > 3000);                              // audibly loud
+    TEST_ASSERT_TRUE(peak <= EngineSynthConfig::kHeadroomPeak); // within budget
+    TEST_ASSERT_TRUE(peak < 32767);                             // never rails
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_config_valid_and_headroom);
@@ -544,5 +621,8 @@ int main(int, char**) {
     RUN_TEST(test_smoothing_step_boundary_policy);
     RUN_TEST(test_smoothing_converges_exactly);
     RUN_TEST(test_renderer_volume_history_independent);
+    RUN_TEST(test_profiles_valid_distinct_default_is_v10);
+    RUN_TEST(test_v6_profile_pitch_tracks_three_firings_per_rev);
+    RUN_TEST(test_v6_profile_deterministic_within_headroom);
     return UNITY_END();
 }

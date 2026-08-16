@@ -13,6 +13,7 @@
 #include "link2/Link2Codec.hpp"
 #include "link2monitor/Link2Monitor.hpp"
 #include "soundsynth/EngineSynth.hpp"
+#include "soundsynth/SynthProfiles.hpp"
 
 #ifdef W17_SIM_LINK2_FEEDER
 #include "SimLink2Feeder.hpp"
@@ -33,7 +34,10 @@ constexpr link2monitor::Link2MonitorConfig kMonitorConfig{};
 static_assert(kMonitorConfig.valid(), "monitor config");
 constexpr enginesim::EngineSimConfig kEngineConfig{};
 static_assert(kEngineConfig.valid(), "engine config");
-constexpr soundsynth::EngineSynthConfig kSynthConfig{};
+// Engine voice: the compile-time default profile (the V10 -- see
+// SynthProfiles.hpp; runtime/NVS/link2 selection is an open owner decision
+// and deliberately does not exist yet).
+constexpr soundsynth::EngineSynthConfig kSynthConfig = soundsynth::profiles::kDefault;
 static_assert(kSynthConfig.valid(), "synth config: partial sum exceeds headroom");
 constexpr lights::LightConfig kLightConfig{};
 static_assert(kLightConfig.valid(), "light config: power budget or thresholds");
