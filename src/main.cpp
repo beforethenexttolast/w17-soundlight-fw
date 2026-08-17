@@ -8,6 +8,7 @@
 #include "audiostartup/AudioStartup.hpp"
 #include "config/PinMap.hpp"
 #include "enginesim/EngineSim.hpp"
+#include "enginesim/ShowScript.hpp"
 #include "lights/LightRenderer.hpp"
 #include "lights_hal_esp32/Esp32NeoPixelStrip.hpp"
 #include "link2/Link2Codec.hpp"
@@ -191,11 +192,19 @@ void loop() {
     }
 #endif
 
-    // ---- 50Hz control tick: monitor -> engine -> publish synth params. ----
+    // ---- 50Hz control tick: monitor -> show script -> engine -> publish. ----
     if (nowMs - lastControlMs >= kControlPeriodMs) {
         lastControlMs = nowMs;
         monitor.poll(nowMs);
-        engine.update(nowMs, monitor.state());
+        // Showcase (link2 modeFlags bit0): under showcase sound authority the
+        // curated idle script substitutes the throttle the wire truthfully
+        // carries as 0 (gentle seeded blips, limiter/overrun unreachable by
+        // construction -- lib/enginesim/ShowScript.hpp). In every other state
+        // -- driving, disarmed, failsafe, low battery, stale link --
+        // applyShowScript is a pure pass-through, so the drive path cannot
+        // be touched by it. Ignition itself keys on armed || showcase inside
+        // EngineSim (D5/D4 gating included).
+        engine.update(nowMs, enginesim::applyShowScript(monitor.state(), nowMs));
         const enginesim::EngineState& e = engine.engine();
         // link2 v2 operator sound config rides the same single packed word:
         // the operator volume composes into the state volume here on core 1

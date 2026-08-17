@@ -7,14 +7,20 @@
 #include "BuildConfig.hpp"
 #include "link2/Link2Codec.hpp"
 
-// ~14s looping bench script. Demonstrates: startup (armed), idle, throttle
+// ~21s looping bench script. Demonstrates: startup (armed), idle, throttle
 // sweeps + gear shifts, ERS deploy (whine) and harvest (rain light), braking
 // (brake light), steering (indicators), a 1s link dropout (engine to
-// silence + hazard blink), then recovery.
+// silence + hazard blink), recovery -- then the SHOWCASE act: a parked
+// beat (disarmed silence), the stationary demo itself (modeFlags bit0:
+// re-crank, showcase breathe + lit tail, the board's own seeded idle
+// script supplies the gentle blips -- the feeder only sends the truthful
+// zeros a showcase boot puts on the wire), and the D5 ending (low battery:
+// show falls silent, red halo pulse -- and NO hazard: the frame stream is
+// alive and healthy, which is exactly the honesty the design demands).
 
 namespace {
 
-constexpr uint32_t kCycleMs = 14000;
+constexpr uint32_t kCycleMs = 21000;
 
 int8_t triangle(uint32_t t, uint32_t periodMs, int8_t peak) {
     const uint32_t phase = t % periodMs;
@@ -68,9 +74,40 @@ const char* buildState(uint32_t t, link2::VehicleState& s) {
         // Scripted dropout: emit NOTHING -> monitor goes stale -> hazard.
         return "DROPOUT";
     }
-    s.throttlePercent = 30;
-    s.gear = 2;
-    return "RECOVERED";
+    if (t < 14000) {
+        s.throttlePercent = 30;
+        s.gear = 2;
+        return "RECOVERED";
+    }
+    if (t < 15500) {
+        // Key still in, driver walked away: disarmed idle -- engine winds
+        // down to silence, dim-white halo. The contrast beat before the
+        // show, and it makes the showcase re-crank unmistakable.
+        s.armed = false;
+        s.throttlePercent = 0;
+        return "PARKED";
+    }
+    if (t < 19500) {
+        // SHOWCASE (link2 modeFlags bit0): exactly what a showcase boot of
+        // board #1 transmits -- armed 0, throttle 0, failsafe 0, real
+        // battery. The BOARD supplies the presentation: ignition re-cranks
+        // off armed||showcase (starter comet + catch flash), the halo runs
+        // the D6 teal breathe with the tail lit, and the seeded local
+        // ShowScript adds the occasional gentle blip over the idle burble.
+        s.armed = false;
+        s.throttlePercent = 0;
+        s.showcase = true;
+        return "SHOWCASE";
+    }
+    // D5 finale: the pack runs low mid-show. The show ENDS -- engine to
+    // silence, red halo pulse ("she's asking for the charger") -- while the
+    // frame stream stays alive: no hazard, because nothing is faulted.
+    s.armed = false;
+    s.throttlePercent = 0;
+    s.showcase = true;
+    s.lowBattery = true;
+    s.batteryMv = 6600;
+    return "SHOW_LOWBATT";
 }
 
 } // namespace
