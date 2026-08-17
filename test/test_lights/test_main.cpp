@@ -485,6 +485,191 @@ void test_low_battery_min_valid_period_renders() {
     TEST_ASSERT_FALSE(haloLow == haloNormal);
 }
 
+// --- Showcase halo (owner decision D6) ---------------------------------------
+
+namespace {
+
+// Effective showcase frame as the monitor delivers it on a live link: bit0
+// set, armed 0, no failsafe (the monitor zeroes the bit in NeverConnected
+// and Lost, so this combination is the ONLY way the showcase look renders).
+VehicleState showcaseUp() {
+    VehicleState s;
+    s.showcase = true;
+    s.armed = false;
+    s.failsafe = false;
+    return s;
+}
+
+} // namespace
+
+// The D6 base look: slow pure-teal breathe on the halo (never dark -- the
+// floor keeps it alive at the dip), dim red tail lit, no amber signature
+// anywhere, and it actually breathes.
+void test_showcase_halo_breathes_teal_with_tail_lit() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    const VehicleState s = showcaseUp();
+
+    uint8_t minG = 255;
+    uint8_t maxG = 0;
+    for (uint32_t t = 0; t <= 3000; t += 50) {
+        r.render(s, light_status::Up, kIgnRunning, t, px);
+        const Rgb halo = px[cfg.halo.start];
+        TEST_ASSERT_EQUAL_UINT8(0, halo.r);         // pure teal family, never a red tinge
+        TEST_ASSERT_TRUE(halo.g > 0 || halo.b > 0); // the floor: never fully dark
+        if (halo.g < minG) minG = halo.g;
+        if (halo.g > maxG) maxG = halo.g;
+        const Rgb tail = segFirst(px, cfg.brake);
+        TEST_ASSERT_TRUE(tail.r > 0); // dim red tail lit (base layer)
+        TEST_ASSERT_EQUAL_UINT8(0, tail.g);
+        TEST_ASSERT_TRUE(noAmber(px)); // showcase base never shows the hazard signature
+    }
+    TEST_ASSERT_TRUE(maxG > minG); // it breathes rather than holding a level
+}
+
+// WHY-comment made executable: grace and showcase mean OPPOSITE things
+// (grace = PRE-FIRST-FRAME benefit of the doubt; showcase = frames PRESENT
+// with modeFlags bit0), so the looks must be tell-apart-able at a glance.
+// Pinned on three visible axes: tail lit vs off, pure-teal vs red-tinged
+// peak, floor vs dips-to-black -- plus the different periods.
+void test_showcase_breathe_distinct_from_grace_breathe() {
+    LightRenderer rShow;
+    LightRenderer rGrace;
+    Rgb show[kNumPixels];
+    Rgb grace[kNumPixels];
+    const VehicleState s = showcaseUp();
+    const VehicleState defaults; // NeverConnected effective state
+
+    // Whole grace window (it escalates at 5000): tail axis on every sample.
+    for (uint32_t t = 0; t <= 4750; t += 250) {
+        rShow.render(s, light_status::Up, kIgnRunning, t, show);
+        rGrace.render(defaults, light_status::NeverConnected, kIgnOff, t, grace);
+        TEST_ASSERT_EQUAL_UINT8(0, show[cfg.halo.start].r); // showcase: never red-tinged
+        TEST_ASSERT_TRUE(segFirst(show, cfg.brake).r > 0);  // showcase: tail lit
+        TEST_ASSERT_TRUE(segFirst(grace, cfg.brake) == (Rgb{0, 0, 0})); // grace: halo-only
+    }
+
+    // Color-family axis at the grace peak (t = 1000): grace shows its
+    // cyan-white tinge (r > 0), showcase stays pure teal (r == 0).
+    rGrace.render(defaults, light_status::NeverConnected, kIgnOff, 1000, grace);
+    rShow.render(s, light_status::Up, kIgnRunning, 1000, show);
+    TEST_ASSERT_TRUE(grace[cfg.halo.start].r > 0);
+    TEST_ASSERT_EQUAL_UINT8(0, show[cfg.halo.start].r);
+
+    // Floor axis at a grace dark instant (t = 2000, its triangle zero):
+    // grace halo is black, the showcase halo is still visibly lit.
+    rGrace.render(defaults, light_status::NeverConnected, kIgnOff, 2000, grace);
+    rShow.render(s, light_status::Up, kIgnRunning, 2000, show);
+    TEST_ASSERT_TRUE(grace[cfg.halo.start] == (Rgb{0, 0, 0}));
+    const Rgb showAt2000 = show[cfg.halo.start];
+    TEST_ASSERT_TRUE(showAt2000.g > 0 || showAt2000.b > 0);
+
+    // Period axis: the showcase level differs 2000 ms apart (a grace-period
+    // clone would alias); 3000 ms apart it repeats exactly.
+    rShow.render(s, light_status::Up, kIgnRunning, 3000, show);
+    const Rgb showAt3000 = show[cfg.halo.start];
+    rShow.render(s, light_status::Up, kIgnRunning, 1000, show);
+    const Rgb showAt1000 = show[cfg.halo.start];
+    TEST_ASSERT_FALSE(showAt1000 == showAt3000); // 2000 ms apart: different
+    rShow.render(s, light_status::Up, kIgnRunning, 4000, show);
+    TEST_ASSERT_TRUE(show[cfg.halo.start] == showAt1000); // 3000 ms apart: same
+}
+
+// Faults outrank the show, renderer-level (defense in depth under the
+// monitor's own zero-on-Lost projection): a Lost link hazards even if a
+// stale frame still says showcase, and a frame-level failsafe (D4 row 3:
+// the radio died mid-showcase) hazards on a live link.
+void test_showcase_lost_or_failsafe_is_hazard_not_show() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    r.render(showcaseUp(), light_status::Lost, kIgnOff, 0, px);
+    TEST_ASSERT_TRUE(allAmber(px));
+
+    LightRenderer r2;
+    VehicleState fs = showcaseUp();
+    fs.failsafe = true;
+    r2.render(fs, light_status::Up, kIgnOff, 0, px);
+    TEST_ASSERT_TRUE(allAmber(px));
+}
+
+// D5, the lights half: low battery ENDS the show -- the red pulse OWNS the
+// halo (overwrite, not blend: at the pulse's dark phase the halo is black,
+// the breathe must not peek through), while the tail keeps its base red.
+// The engine half (ignition Off => silence) is pinned in test_enginesim;
+// kIgnOff here mirrors that state.
+void test_showcase_low_battery_pulse_wins() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s = showcaseUp();
+    s.lowBattery = true;
+
+    // Pulse peak: halo pure red, no teal anywhere on it.
+    r.render(s, light_status::Up, kIgnOff, cfg.lowBatteryPeriodMs / 2, px);
+    for (uint8_t i = 0; i < cfg.halo.len; ++i) {
+        const Rgb p = px[cfg.halo.start + i];
+        TEST_ASSERT_TRUE(p.r > 0);
+        TEST_ASSERT_EQUAL_UINT8(0, p.g);
+        TEST_ASSERT_EQUAL_UINT8(0, p.b);
+    }
+
+    // Pulse dark phase: the halo is BLACK -- the showcase breathe (whose
+    // floor would keep it lit) has been overwritten, not mixed.
+    r.render(s, light_status::Up, kIgnOff, 0, px);
+    for (uint8_t i = 0; i < cfg.halo.len; ++i) {
+        TEST_ASSERT_TRUE(px[cfg.halo.start + i] == (Rgb{0, 0, 0}));
+    }
+}
+
+// Functional layers keep outranking the showcase base: brake overwrites the
+// tail (layer-order pin -- a truthful showcase frame never brakes, but the
+// compositor must not care) and the steering indicators blink amber over a
+// live table-demo link (D9: steering IS live in showcase).
+void test_showcase_brake_and_indicators_still_outrank_base() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s = showcaseUp();
+    s.braking = true;
+    s.steeringPercent = -80;
+
+    r.render(s, light_status::Up, kIgnRunning, 100, px); // indicator on-phase
+    const Rgb brake = segFirst(px, cfg.brake);
+    TEST_ASSERT_TRUE(brake.r > 20); // bright red, not the dim tail
+    TEST_ASSERT_EQUAL_UINT8(0, brake.g);
+    const Rgb left = segFirst(px, cfg.leftIndicator);
+    TEST_ASSERT_TRUE(left.r > 0 && left.g > 0 && left.b == 0); // amber blink
+    TEST_ASSERT_EQUAL_UINT8(0, px[cfg.halo.start].r); // halo still the show
+}
+
+// Scene-1 opening beats ride the existing ignition animation for free: the
+// starter comet sweeps while Cranking, and the catch flash crossfades INTO
+// THE BREATHE (no snap to armed teal -- the blend target is the showcase
+// base). The comet/flash cyan is far brighter than the breathe ever gets,
+// so the two phases are unmistakable.
+void test_showcase_crank_comet_and_catch_flash_settle_into_breathe() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    const VehicleState s = showcaseUp();
+
+    // Cranking: the cyan comet head stands well above the breathe's range.
+    r.render(s, light_status::Up, kIgnCranking, 40, px);
+    uint8_t brightest = 0;
+    for (uint8_t i = 0; i < cfg.halo.len; ++i) {
+        if (px[cfg.halo.start + i].g > brightest) brightest = px[cfg.halo.start + i].g;
+    }
+    TEST_ASSERT_TRUE(brightest > 10); // breathe tops out well under this
+
+    // Catch: flash starts on the Running edge, bright cyan...
+    r.render(s, light_status::Up, kIgnRunning, 1000, px);
+    const Rgb atCatch = px[cfg.halo.start];
+    TEST_ASSERT_TRUE(atCatch.g > 10);
+    // ...and at flash end the halo IS the breathe for that instant.
+    r.render(s, light_status::Up, kIgnRunning, 1000 + cfg.ignitionFlashMs, px);
+    const Rgb settled = px[cfg.halo.start];
+    TEST_ASSERT_EQUAL_UINT8(0, settled.r);
+    TEST_ASSERT_TRUE(settled.g > 0);
+    TEST_ASSERT_TRUE(settled.g < atCatch.g); // gentle show, not the flash
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_config_valid_and_within_power_budget);
@@ -508,5 +693,11 @@ int main(int, char**) {
     RUN_TEST(test_ignition_config_validation_bounds);
     RUN_TEST(test_low_battery_period_validation_boundary);
     RUN_TEST(test_low_battery_min_valid_period_renders);
+    RUN_TEST(test_showcase_halo_breathes_teal_with_tail_lit);
+    RUN_TEST(test_showcase_breathe_distinct_from_grace_breathe);
+    RUN_TEST(test_showcase_lost_or_failsafe_is_hazard_not_show);
+    RUN_TEST(test_showcase_low_battery_pulse_wins);
+    RUN_TEST(test_showcase_brake_and_indicators_still_outrank_base);
+    RUN_TEST(test_showcase_crank_comet_and_catch_flash_settle_into_breathe);
     return UNITY_END();
 }

@@ -26,6 +26,38 @@ constexpr Rgb kIgnitionTrail2{0, 45, 40};  // fading tail, two pixels behind
 // unambiguously.
 constexpr Rgb kDrsGreen{0, 255, 0};
 
+// Showcase base halo (owner decision D6): a SLOW pure-teal breathe with a
+// brightness floor, rendered with the dim red tail lit by the normal base
+// layer. WHY it must be distinct from the NeverConnected grace breathe:
+// the two states mean OPPOSITE things about board #1. Grace = PRE-FIRST-
+// FRAME -- "no frame has ever arrived, board #1 may be booting or the
+// harness may be dead" -- a bounded benefit-of-the-doubt window (<= 5 s,
+// then hazard; audit defect 9). Showcase = FRAMES PRESENT with modeFlags
+// bit0 set -- board #1 is alive, talking, and explicitly authorizing the
+// demo (the monitor zeroes the bit in NeverConnected and Lost, so this
+// look can only ever render on a live link). If the two looks could be
+// confused, a dead harness would read as a healthy shelf demo -- the exact
+// calm-pretty-lights-during-a-fault trap the design exists to exclude.
+// Distinct on four axes, none subtle:
+//   - color family: pure teal (r == 0) vs the grace breathe's cyan-white
+//     tinge (its r channel is lvl/6, nonzero when lit);
+//   - period: 3 s vs the grace's 2 s;
+//   - floor: never dips dark (40 %..100 % of teal) vs grace touching black;
+//   - context: dim red tail LIT (base layer) vs grace's halo-only frame.
+// Also distinct from solid armed teal (steady, full) and dim-white
+// disarmed (steady, gray). Amber/red stay reserved for faults/alerts.
+constexpr uint32_t kShowcaseBreathePeriodMs = 3000;
+constexpr uint32_t kShowcaseBreatheFloor = 102; // 40% of full scale
+constexpr Rgb showcaseBreathe(uint32_t nowMs) {
+    const uint32_t phase = nowMs % kShowcaseBreathePeriodMs;
+    const uint32_t half = kShowcaseBreathePeriodMs / 2u;
+    const uint32_t tri = phase < half ? phase : (kShowcaseBreathePeriodMs - phase);
+    const uint32_t lvl =
+        kShowcaseBreatheFloor + tri * (255u - kShowcaseBreatheFloor) / half;
+    return Rgb{0, static_cast<uint8_t>(kTeal.g * lvl / 255u),
+               static_cast<uint8_t>(kTeal.b * lvl / 255u)};
+}
+
 // The static power budget in LightConfig::valid() models the worst case as
 // every LED at TWO FULL primaries (the "all-amber hazard" allowance:
 // 2 * 20 mA scaled by the cap). That model stays a true upper bound only
@@ -43,6 +75,13 @@ static_assert(channelSum(kIgnitionTrail) <= kBudgetModelChannelSum, "trail excee
 static_assert(channelSum(kIgnitionTrail2) <= kBudgetModelChannelSum, "trail exceeds budget model");
 static_assert(channelSum(kTeal) <= kBudgetModelChannelSum, "halo teal exceeds budget model");
 static_assert(channelSum(kDrsGreen) <= kBudgetModelChannelSum, "DRS green exceeds budget model");
+// The showcase breathe peaks at exactly kTeal (lvl 255) and only ever scales
+// it down -- pin the peak so the budget claim survives a formula tweak.
+static_assert(channelSum(showcaseBreathe(kShowcaseBreathePeriodMs / 2)) ==
+                  channelSum(kTeal),
+              "showcase breathe peak must be the plain halo teal");
+static_assert(channelSum(showcaseBreathe(0)) <= channelSum(kTeal),
+              "showcase breathe floor exceeds its own peak");
 
 // Gamma-2.2 LUT (WS2812 look linear-perceptual). Built once.
 struct GammaLut {
@@ -187,7 +226,16 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
         haloPx(static_cast<uint8_t>(head + config_.halo.len - 1), kIgnitionTrail);
         haloPx(static_cast<uint8_t>(head + config_.halo.len - 2), kIgnitionTrail2);
     } else {
-        Rgb haloColor = state.armed ? kTeal : kDimWhite;
+        // Base halo. armed teal outranks the showcase breathe on purpose: a
+        // truthful board #1 never sends armed+showcase together (the
+        // showcase boot pins its arm input false), but if a frame carried
+        // both anyway the car must LOOK armed -- honesty beats aesthetics.
+        // The breathe itself renders only with the link Up: the monitor
+        // zeroes the showcase bit in both NeverConnected and Lost, so the
+        // grace/hazard paths above never see it (see showcaseBreathe's
+        // distinctness comment).
+        Rgb haloColor =
+            state.armed ? kTeal : (state.showcase ? showcaseBreathe(nowMs) : kDimWhite);
         if (flashActive_) {
             // Wrap-safe window; expiry clears the flag so elapsed can never
             // wrap back below the duration and phantom-reopen.
@@ -195,7 +243,12 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
             if (elapsed >= config_.ignitionFlashMs) {
                 flashActive_ = false;
             } else {
-                haloColor = blendToward(kIgnitionCyan, kTeal, elapsed, config_.ignitionFlashMs);
+                // "Engine catches" flash crossfades into whatever the base
+                // look is -- armed teal in a drive boot (byte-identical to
+                // before), the breathe in a showcase boot (the catch
+                // settles into the show without a color snap).
+                haloColor =
+                    blendToward(kIgnitionCyan, haloColor, elapsed, config_.ignitionFlashMs);
             }
         }
         fill(px, config_.halo, haloColor);

@@ -112,11 +112,13 @@ struct LightConfig {
 // fire-up crossfade are deterministic in tests.
 //
 // Priority (low to high, later overrides): base (halo incl. the ignition-on
-// animation + dim tail) -> DRS-open tell (steady green on the rear bar's two
-// edge pixels) -> functional (brake, indicators, rain; the brake overwrite is
-// what keeps the DRS tell from ever masking the brake light) -> alert
-// (low-battery halo pulse) -> FAILSAFE hazard (all amber, overrides
-// everything).
+// animation + dim tail; in a showcase boot the disarmed halo is the D6
+// teal breathe -- BASE LAYER ONLY, so every layer after it outranks the
+// show) -> DRS-open tell (steady green on the rear bar's two edge pixels)
+// -> functional (brake, indicators, rain; the brake overwrite is what keeps
+// the DRS tell from ever masking the brake light) -> alert (low-battery
+// halo pulse -- D5: it owns the halo over the showcase breathe) -> FAILSAFE
+// hazard (all amber, overrides everything).
 class LightRenderer {
 public:
     explicit LightRenderer(LightConfig config = LightConfig{});
