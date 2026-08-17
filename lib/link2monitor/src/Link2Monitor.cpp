@@ -47,6 +47,13 @@ void Link2Monitor::recompute(uint32_t nowMs) {
     effective_.armed = false;
     effective_.ersDeploying = false;
     effective_.failsafe = true;
+    // modeFlags bits are STATE (mode indications), not config: a stale
+    // showcase/pairing indication must not outlive the link. Nothing keys
+    // off them today (both reserved, always 0 from current board #1); the
+    // safe projection exists now so future consumers inherit it instead of
+    // re-deciding it under pressure.
+    effective_.showcase = false;
+    effective_.awaitingController = false;
     // Motion telemetry must not persist -- a stale rpm would drive the engine
     // sound and speed readout.
     effective_.rpm = 0;

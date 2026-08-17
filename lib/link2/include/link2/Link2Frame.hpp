@@ -34,12 +34,18 @@
 //                        fall back to 0 (V10), never reject the frame
 //   [12] volume          0..100 engine-sound level; 0 = TRUE silence, receivers
 //                        clamp >100 to 100; scales sound only, never lights
+//   [13] modeFlags       bit0 showcase, bit1 awaitingController -- BOTH
+//                        reserved for accepted future modes (sender transmits
+//                        0 today); bits 2-7 spare (sender writes 0, receivers
+//                        mask/ignore, never reject)
 //
-// v1 -> v2 (2026-08-17): appended soundProfile + volume (vision decision 15).
-// Same framing/CRC; length byte 11 -> 13, version byte 1 -> 2. Because
-// receivers hard-reject unsupported length bytes, a version-mismatched pair
-// of boards is safe but non-functional (permanent staleness failsafe), so
-// BOTH boards must be flashed together -- there is no mixed-version interop.
+// v1 -> v2 (2026-08-17): appended soundProfile + volume (vision decision 15)
+// and modeFlags (owner 2026-08-17: showcase + BT show-off both wanted flags
+// bit7, resolved with a dedicated byte). Same framing/CRC; length byte
+// 11 -> 14, version byte 1 -> 2. Because receivers hard-reject unsupported
+// length bytes, a version-mismatched pair of boards is safe but
+// non-functional (permanent staleness failsafe), so BOTH boards must be
+// flashed together -- there is no mixed-version interop.
 //
 // Full spec with a worked example: docs/link2_protocol.md.
 
@@ -47,7 +53,7 @@ namespace link2 {
 
 inline constexpr uint8_t kStartByte = 0xA5;
 inline constexpr uint8_t kProtocolVersion = 2;
-inline constexpr size_t kPayloadLen = 13;
+inline constexpr size_t kPayloadLen = 14;
 inline constexpr size_t kFrameLen = 3 + kPayloadLen; // start + length + payload + crc
 
 // Flag bit positions (payload byte [3]).
@@ -75,6 +81,17 @@ inline constexpr uint8_t kSoundProfileCount = 2;    // first reserved value
 inline constexpr uint8_t kVolumeMax = 100;
 inline constexpr uint8_t kDefaultVolume = 80;
 
+// modeFlags bit positions (payload byte [13], v2). BOTH bits are reserved
+// for accepted-but-unbuilt future modes and are ALWAYS 0 from current
+// firmware; they exist now so that turning either mode on later is a
+// behavior change on an already-flashed wire format, not another
+// coordinated protocol bump. (Owner decision 2026-08-17: showcase D2 and
+// BT-7 both wanted flags bit7 -- collision resolved with this dedicated
+// byte; flags bit7 stays reserved.) Bits 2-7 are spare: sender writes 0,
+// receivers mask/ignore, never reject.
+inline constexpr uint8_t kModeFlagShowcase = 1u << 0;           // future stationary-demo state
+inline constexpr uint8_t kModeFlagAwaitingController = 1u << 1; // future BT pairing surface (§6.3)
+
 struct VehicleState {
     int8_t throttlePercent = 0;
     int8_t steeringPercent = 0;
@@ -92,6 +109,8 @@ struct VehicleState {
     uint8_t driveMode = 1;    // 0 TRAINING / 1 RACE (gearbox) / 2 ERS (gearbox+ERS)
     uint8_t soundProfile = kSoundProfileV10; // v2: engine voice; >= kSoundProfileCount reserved
     uint8_t volume = kDefaultVolume;         // v2: 0..100 sound level, 0 = true silence
+    bool showcase = false;           // v2 modeFlags bit0 -- reserved, always false today
+    bool awaitingController = false; // v2 modeFlags bit1 -- reserved, always false today
 };
 
 enum class DecodeResult : uint8_t {

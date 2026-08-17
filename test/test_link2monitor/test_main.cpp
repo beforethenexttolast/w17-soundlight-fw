@@ -33,6 +33,11 @@ VehicleState driving() {
     s.driveMode = 2;
     s.soundProfile = link2::kSoundProfileV6Hybrid; // v2 operator config
     s.volume = 25;                                 // non-default on purpose
+    // v2 modeFlags: reserved bits a CURRENT board #1 never sets -- crafted
+    // here (the codec permits it) purely to pin parse+expose while Up and
+    // the cleared-on-Lost projection below.
+    s.showcase = true;
+    s.awaitingController = true;
     return s;
 }
 
@@ -58,6 +63,10 @@ void test_goes_up_on_first_frame() {
     TEST_ASSERT_EQUAL_INT8(80, mon.state().throttlePercent);
     TEST_ASSERT_EQUAL_UINT16(4000, mon.state().rpm);
     TEST_ASSERT_FALSE(mon.state().failsafe);
+    // modeFlags bits are parsed and EXPOSED while Up (no consumer keys off
+    // them yet -- both reserved today).
+    TEST_ASSERT_TRUE(mon.state().showcase);
+    TEST_ASSERT_TRUE(mon.state().awaitingController);
 }
 
 void test_staleness_flips_at_exactly_the_window() {
@@ -95,6 +104,10 @@ void test_per_field_staleness_projection() {
     // voice/volume glitch on recovery.
     TEST_ASSERT_EQUAL_UINT8(link2::kSoundProfileV6Hybrid, s.soundProfile);
     TEST_ASSERT_EQUAL_UINT8(25, s.volume);
+    // v2 modeFlags cleared: mode INDICATIONS are state, not config -- a
+    // stale showcase/pairing signal must not outlive the link.
+    TEST_ASSERT_FALSE(s.showcase);
+    TEST_ASSERT_FALSE(s.awaitingController);
 }
 
 void test_recovers_on_next_good_frame() {

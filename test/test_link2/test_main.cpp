@@ -38,8 +38,8 @@ VehicleState makeGoldenState() {
 // the worked example in docs/link2_protocol.md on BOTH repos -- the shared
 // witness that the two verbatim codec copies speak the same v2 wire format.
 const uint8_t kGoldenFrame[link2::kFrameLen] = {
-    0xA5, 0x0D, 0x02, 0x2A, 0xE7, 0x4C, 0x03, 0xDC,
-    0x05, 0xDC, 0x1E, 0x3C, 0x02, 0x01, 0x50, 0xCC,
+    0xA5, 0x0E, 0x02, 0x2A, 0xE7, 0x4C, 0x03, 0xDC, 0x05,
+    0xDC, 0x1E, 0x3C, 0x02, 0x01, 0x50, 0x00, 0x5A,
 };
 
 } // namespace
@@ -72,6 +72,33 @@ void test_decode_roundtrip() {
     TEST_ASSERT_EQUAL_UINT8(2, out.driveMode);
     TEST_ASSERT_EQUAL_UINT8(link2::kSoundProfileV6Hybrid, out.soundProfile);
     TEST_ASSERT_EQUAL_UINT8(80, out.volume);
+    TEST_ASSERT_FALSE(out.showcase);           // modeFlags 0x00 in the golden
+    TEST_ASSERT_FALSE(out.awaitingController); // (both reserved bits off today)
+}
+
+// modeFlags from this board's seat: the named bits decode at their pinned
+// positions AND round-trip (the future modes inherit a proven wire path);
+// the spare bits 2-7 are masked/ignored, never rejected -- a frame from a
+// future sender that uses one still decodes cleanly here (the flags-bit7
+// discipline). No behavior on this board keys off either named bit yet.
+void test_mode_flags_decode_and_spare_bits_ignored() {
+    VehicleState in = makeGoldenState();
+    in.showcase = true;
+    in.awaitingController = true;
+    uint8_t frame[link2::kFrameLen];
+    link2::encodeFrame(in, frame);
+    TEST_ASSERT_EQUAL_HEX8(0x03, frame[15]); // bit0 | bit1, positions pinned
+
+    VehicleState out;
+    TEST_ASSERT_EQUAL(DecodeResult::Ok, link2::decodeFrame(frame, sizeof(frame), out));
+    TEST_ASSERT_TRUE(out.showcase);
+    TEST_ASSERT_TRUE(out.awaitingController);
+
+    frame[15] = 0xFC; // ONLY spare bits set
+    frame[link2::kFrameLen - 1] = link2::computeCrc8(frame + 1, 1 + link2::kPayloadLen);
+    TEST_ASSERT_EQUAL(DecodeResult::Ok, link2::decodeFrame(frame, sizeof(frame), out));
+    TEST_ASSERT_FALSE(out.showcase);
+    TEST_ASSERT_FALSE(out.awaitingController);
 }
 
 // The v2 sound bytes arrive RAW (like driveMode): reserved profiles and
@@ -111,6 +138,12 @@ void test_v1_frame_hard_rejected() {
     // Rejected AT the length byte -- no v1 body byte is ever buffered.
     TEST_ASSERT_EQUAL(Link2FrameAssembler::FeedResult::FrameInvalid,
                       assembler.feedByte(v1Frame[1]));
+
+    // The 13-byte-payload v2 DRAFT (pre-modeFlags, never flashed) dies the
+    // same way: the shipped v2 is the 14-byte-payload form and nothing else.
+    TEST_ASSERT_EQUAL(Link2FrameAssembler::FeedResult::Incomplete,
+                      assembler.feedByte(link2::kStartByte));
+    TEST_ASSERT_EQUAL(Link2FrameAssembler::FeedResult::FrameInvalid, assembler.feedByte(0x0D));
 }
 
 void test_decode_rejections() {
@@ -180,6 +213,7 @@ int main(int, char**) {
     RUN_TEST(test_golden_frame_bytes);
     RUN_TEST(test_decode_roundtrip);
     RUN_TEST(test_reserved_sound_values_arrive_raw);
+    RUN_TEST(test_mode_flags_decode_and_spare_bits_ignored);
     RUN_TEST(test_v1_frame_hard_rejected);
     RUN_TEST(test_decode_rejections);
     RUN_TEST(test_assembler_hard_rejects_bad_length_byte);

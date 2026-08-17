@@ -38,7 +38,11 @@ size_t encodeFrame(const VehicleState& state, uint8_t out[kFrameLen]) {
     out[12] = state.driveMode;
     out[13] = state.soundProfile;
     out[14] = state.volume;
-    out[15] = computeCrc8(out + 1, 1 + kPayloadLen); // over [length + payload]
+    uint8_t modeFlags = 0; // spare bits 2-7 always transmit 0
+    if (state.showcase) modeFlags |= kModeFlagShowcase;
+    if (state.awaitingController) modeFlags |= kModeFlagAwaitingController;
+    out[15] = modeFlags;
+    out[16] = computeCrc8(out + 1, 1 + kPayloadLen); // over [length + payload]
     return kFrameLen;
 }
 
@@ -81,6 +85,11 @@ DecodeResult decodeFrame(const uint8_t* data, size_t len, VehicleState& out) {
     // rewrites a CRC-valid value, so nothing decodable is lost here.
     out.soundProfile = data[13];
     out.volume = data[14];
+    // modeFlags: named bits decode like the flags byte's; spare bits 2-7 are
+    // MASKED here (the receivers-ignore rule), mirroring flags bit7.
+    const uint8_t modeFlags = data[15];
+    out.showcase = (modeFlags & kModeFlagShowcase) != 0;
+    out.awaitingController = (modeFlags & kModeFlagAwaitingController) != 0;
     return DecodeResult::Ok;
 }
 
