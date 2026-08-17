@@ -6,11 +6,14 @@
 
 namespace enginesim {
 
-// Ignition / running state, driven by the `armed` flag from board #1.
-//   Off      : disarmed -> silence.
-//   Cranking : armed 0->1 -> a brief starter-whir + fire-up before idle.
+// Ignition / running state, driven by board #1's arbitrated flags.
+//   Off      : no sound authority -> silence.
+//   Cranking : authority 0->1 -> a brief starter-whir + fire-up before idle.
 //   Running  : normal idle..redline behavior.
-// A failsafe (effective armed == false via the monitor) drops back to Off.
+// Sound authority is `armed || showcase` (link2 modeFlags bit0, the
+// stationary-demo boot state) -- see ignitionAuthority() below. A failsafe
+// (effective armed == false via the monitor; effective showcase likewise
+// zeroed) drops back to Off.
 enum class Ignition : uint8_t { Off, Cranking, Running };
 
 struct EngineSimConfig {
@@ -52,6 +55,37 @@ struct EngineSimConfig {
                overrunHighRpmPct <= 100;
     }
 };
+
+// --- Sound authority (who may run the engine) --------------------------------
+//
+// The SHOWCASE branch of the authority, kept as ONE named predicate because
+// the ignition machine and the show script must gate on exactly the same
+// condition (a script that plays while ignition says Off, or vice versa,
+// would be a split-brain bug):
+//   - showcase: link2 modeFlags bit0 -- board #1 booted in its stationary
+//     demo state. Command-class: the monitor's Lost projection zeroes it,
+//     so a cut wire mid-show goes silent within the 500 ms mandate.
+//   - !armed: armed OUTRANKS showcase. A truthful board #1 can never send
+//     both (the showcase boot pins its arm input false); if a frame ever
+//     carried both anyway, drive semantics win and the script stays out of
+//     the throttle path.
+//   - !failsafe: D4 row "link existed, then died" -- board #1 keeps sending
+//     showcase=1 + failsafe=1 after a mid-session radio death, and the show
+//     must fall silent so the hazard is unmissable.
+//   - !lowBattery: owner decision D5 -- low battery ENDS the show (silence,
+//     red halo pulse, less drain), unlike the armed path where lowBattery
+//     stays warn-only (a driving car keeps its engine sound; battery is
+//     never allowed to cut traction-adjacent feedback).
+constexpr bool showcaseSoundAuthority(const link2::VehicleState& s) {
+    return s.showcase && !s.armed && !s.failsafe && !s.lowBattery;
+}
+
+// The full ignition condition: the pre-showcase `armed` path byte-unchanged
+// (short-circuits first; armed+lowBattery still runs, armed+failsafe
+// unchanged from the original `!armed` rule), OR the showcase authority.
+constexpr bool ignitionAuthority(const link2::VehicleState& s) {
+    return s.armed || showcaseSoundAuthority(s);
+}
 
 // Output of one tick -- everything the synth + lights need. Pure data.
 struct EngineState {

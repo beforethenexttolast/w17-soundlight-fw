@@ -30,8 +30,10 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
         dtMs = kMaxDtMs;
     }
 
-    // --- Ignition state machine (driven by armed) ---
-    if (!state.armed) {
+    // --- Ignition state machine (driven by the sound authority:
+    // armed || showcase, with the showcase branch gated on !failsafe and
+    // !lowBattery -- see ignitionAuthority() in the header). ---
+    if (!ignitionAuthority(state)) {
         ignition_ = Ignition::Off;
     } else if (ignition_ == Ignition::Off) {
         ignition_ = Ignition::Cranking;

@@ -450,6 +450,103 @@ void test_config_valid() {
     TEST_ASSERT_FALSE(bad.valid());
 }
 
+// --- Showcase sound authority (link2 modeFlags bit0) -------------------------
+
+namespace {
+
+// Effective showcase frame as the monitor delivers it while the link is Up
+// and board #1 is in its SHOWCASE boot: showcase set, armed 0, throttle 0
+// (truthful wire), no failsafe.
+VehicleState showcaseIdle() {
+    VehicleState s;
+    s.showcase = true;
+    s.armed = false;
+    s.failsafe = false;
+    s.throttlePercent = 0;
+    return s;
+}
+
+} // namespace
+
+// Showcase 0->1 cranks exactly like arming does (the wave-3 ignition halo
+// animation keys off this same machine, so the starter sweep + catch come
+// free), then settles at idle.
+void test_showcase_cranks_then_runs() {
+    EngineSim e;
+    VehicleState s = showcaseIdle();
+    e.update(20, s);
+    TEST_ASSERT_EQUAL(Ignition::Cranking, e.engine().ignition);
+    run(e, s, 60, 20, 20);
+    TEST_ASSERT_EQUAL(Ignition::Running, e.engine().ignition);
+    TEST_ASSERT_UINT16_WITHIN(300, 3500, e.engine().engineRpm); // idle +/- wobble
+}
+
+// D4 row 3: board #1 keeps sending showcase=1 but with failsafe=1 after a
+// mid-session radio death -- the show must fall silent. From boot AND from
+// a running show alike.
+void test_showcase_with_failsafe_stays_off() {
+    EngineSim fromBoot;
+    VehicleState s = showcaseIdle();
+    s.failsafe = true;
+    run(fromBoot, s, 60, 20, 0);
+    TEST_ASSERT_EQUAL(Ignition::Off, fromBoot.engine().ignition);
+    TEST_ASSERT_EQUAL_UINT16(0, fromBoot.engine().engineRpm);
+
+    EngineSim midShow;
+    run(midShow, showcaseIdle(), 60, 20, 0); // Running
+    TEST_ASSERT_EQUAL(Ignition::Running, midShow.engine().ignition);
+    run(midShow, s, 2, 20, 1200); // failsafe asserts mid-show
+    TEST_ASSERT_EQUAL(Ignition::Off, midShow.engine().ignition);
+}
+
+// D5: low battery ENDS the show -- ignition Off (silence) so the red halo
+// pulse is unmissable -- while the ARMED path keeps its warn-only rule
+// (a driving car never loses its engine sound to a battery warning).
+void test_showcase_low_battery_ends_show_but_armed_path_warn_only() {
+    EngineSim show;
+    run(show, showcaseIdle(), 60, 20, 0);
+    TEST_ASSERT_EQUAL(Ignition::Running, show.engine().ignition);
+    VehicleState low = showcaseIdle();
+    low.lowBattery = true;
+    run(show, low, 2, 20, 1200);
+    TEST_ASSERT_EQUAL(Ignition::Off, show.engine().ignition); // the show ends
+
+    EngineSim drive;
+    VehicleState armedLow = armedAt(30);
+    armedLow.lowBattery = true;
+    run(drive, armedLow, 60, 20, 0);
+    TEST_ASSERT_EQUAL(Ignition::Running, drive.engine().ignition); // warn-only, unchanged
+}
+
+// The monitor's Lost projection zeroes the showcase bit (command-class);
+// this is the enginesim half of that contract: a cleared bit kills the
+// ignition on the next tick.
+void test_showcase_cleared_drops_to_off() {
+    EngineSim e;
+    run(e, showcaseIdle(), 60, 20, 0);
+    TEST_ASSERT_EQUAL(Ignition::Running, e.engine().ignition);
+    VehicleState gone; // all defaults: showcase 0, armed 0, failsafe 1
+    e.update(1220, gone);
+    TEST_ASSERT_EQUAL(Ignition::Off, e.engine().ignition);
+}
+
+// The authority predicates themselves, exhaustively over the four gating
+// flags (armed path must reduce to `armed` alone -- byte-unchanged drive
+// semantics; showcase path needs showcase && !armed && !failsafe &&
+// !lowBattery).
+void test_ignition_authority_truth_table() {
+    for (int mask = 0; mask < 16; ++mask) {
+        VehicleState s;
+        s.armed = (mask & 1) != 0;
+        s.showcase = (mask & 2) != 0;
+        s.failsafe = (mask & 4) != 0;
+        s.lowBattery = (mask & 8) != 0;
+        const bool expectShow = s.showcase && !s.armed && !s.failsafe && !s.lowBattery;
+        TEST_ASSERT_EQUAL(expectShow, enginesim::showcaseSoundAuthority(s));
+        TEST_ASSERT_EQUAL(s.armed || expectShow, enginesim::ignitionAuthority(s));
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_off_when_disarmed);
@@ -471,5 +568,10 @@ int main(int, char**) {
     RUN_TEST(test_overrun_retrigger_restarts_timer);
     RUN_TEST(test_crank_transition_across_wrap);
     RUN_TEST(test_config_valid);
+    RUN_TEST(test_showcase_cranks_then_runs);
+    RUN_TEST(test_showcase_with_failsafe_stays_off);
+    RUN_TEST(test_showcase_low_battery_ends_show_but_armed_path_warn_only);
+    RUN_TEST(test_showcase_cleared_drops_to_off);
+    RUN_TEST(test_ignition_authority_truth_table);
     return UNITY_END();
 }
