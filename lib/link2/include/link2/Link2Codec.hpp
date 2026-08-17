@@ -10,7 +10,8 @@ namespace link2 {
 // two implementations against each other.
 uint8_t computeCrc8(const uint8_t* data, size_t len);
 
-// Encodes a complete v1 frame into out[kFrameLen]. Returns kFrameLen.
+// Encodes a complete frame (the current kProtocolVersion) into
+// out[kFrameLen]. Returns kFrameLen.
 size_t encodeFrame(const VehicleState& state, uint8_t out[kFrameLen]);
 
 // Decodes a complete frame buffer. Validation order: start -> length -> CRC
