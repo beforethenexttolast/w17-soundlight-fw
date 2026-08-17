@@ -53,6 +53,36 @@ void test_golden_frame_bytes() {
     TEST_ASSERT_EQUAL_UINT8_ARRAY(kGoldenFrame, frame, link2::kFrameLen);
 }
 
+// ADDITIONAL golden pin for the showcase wave, byte-identical to the sender
+// repo's and to the worked-example note in docs/link2_protocol.md on both
+// repos: the same golden state with showcase = true differs in EXACTLY two
+// bytes -- modeFlags 0x01 and the CRC. (A codec pin, not a plausible frame:
+// a real SHOWCASE boot sends armed = 0 / throttle = 0 per the state matrix.)
+void test_showcase_golden_frame_bytes() {
+    const uint8_t kShowcaseGoldenFrame[link2::kFrameLen] = {
+        0xA5, 0x0E, 0x02, 0x2A, 0xE7, 0x4C, 0x03, 0xDC, 0x05,
+        0xDC, 0x1E, 0x3C, 0x02, 0x01, 0x50, 0x01, 0x8F,
+    };
+    VehicleState s = makeGoldenState();
+    s.showcase = true;
+    uint8_t frame[link2::kFrameLen];
+    TEST_ASSERT_EQUAL_UINT32(link2::kFrameLen, link2::encodeFrame(s, frame));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(kShowcaseGoldenFrame, frame, link2::kFrameLen);
+
+    for (size_t i = 0; i < link2::kFrameLen; ++i) {
+        if (i == 15 || i == 16) continue;
+        TEST_ASSERT_EQUAL_HEX8(kGoldenFrame[i], kShowcaseGoldenFrame[i]);
+    }
+
+    // And the receiving side this board actually runs: those bytes decode
+    // back to showcase = true with armed untouched by the bit.
+    VehicleState out;
+    TEST_ASSERT_EQUAL(DecodeResult::Ok,
+                      link2::decodeFrame(kShowcaseGoldenFrame, link2::kFrameLen, out));
+    TEST_ASSERT_TRUE(out.showcase);
+    TEST_ASSERT_FALSE(out.awaitingController);
+}
+
 void test_decode_roundtrip() {
     uint8_t frame[link2::kFrameLen];
     link2::encodeFrame(makeGoldenState(), frame);
@@ -77,10 +107,12 @@ void test_decode_roundtrip() {
 }
 
 // modeFlags from this board's seat: the named bits decode at their pinned
-// positions AND round-trip (the future modes inherit a proven wire path);
-// the spare bits 2-7 are masked/ignored, never rejected -- a frame from a
-// future sender that uses one still decodes cleanly here (the flags-bit7
-// discipline). No behavior on this board keys off either named bit yet.
+// positions AND round-trip; the spare bits 2-7 are masked/ignored, never
+// rejected -- a frame from a future sender that uses one still decodes
+// cleanly here (the flags-bit7 discipline). bit0 (showcase) is LIVE: the
+// engine keys ignition on armed || showcase and the lights render the
+// showcase halo from it (their own suites); bit1 stays reserved -- nothing
+// here keys off it until the BT mode ships.
 void test_mode_flags_decode_and_spare_bits_ignored() {
     VehicleState in = makeGoldenState();
     in.showcase = true;
@@ -211,6 +243,7 @@ void test_assembler_resyncs_after_corruption() {
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_golden_frame_bytes);
+    RUN_TEST(test_showcase_golden_frame_bytes);
     RUN_TEST(test_decode_roundtrip);
     RUN_TEST(test_reserved_sound_values_arrive_raw);
     RUN_TEST(test_mode_flags_decode_and_spare_bits_ignored);

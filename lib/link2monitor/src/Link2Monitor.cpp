@@ -48,10 +48,12 @@ void Link2Monitor::recompute(uint32_t nowMs) {
     effective_.ersDeploying = false;
     effective_.failsafe = true;
     // modeFlags bits are STATE (mode indications), not config: a stale
-    // showcase/pairing indication must not outlive the link. Nothing keys
-    // off them today (both reserved, always 0 from current board #1); the
-    // safe projection exists now so future consumers inherit it instead of
-    // re-deciding it under pressure.
+    // showcase/pairing indication must not outlive the link. showcase is
+    // LIVE -- the engine keys ignition on armed || showcase and the lights
+    // render the showcase halo from it -- so zeroing it here is what turns
+    // a cut wire mid-show into silence + hazard instead of a show that
+    // plays on (the protocol's command-class rule for bit0).
+    // awaitingController stays reserved; it inherits the same projection.
     effective_.showcase = false;
     effective_.awaitingController = false;
     // Motion telemetry must not persist -- a stale rpm would drive the engine

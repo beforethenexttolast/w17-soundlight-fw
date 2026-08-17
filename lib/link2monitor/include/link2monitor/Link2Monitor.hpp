@@ -30,10 +30,13 @@ struct Link2MonitorConfig {
 // Per-field staleness (the key design decision): commands are zeroed and
 // failsafe is asserted, motion telemetry (rpm) is zeroed so a stale value
 // cannot drive sound/lights, and the v2 modeFlags bits (showcase /
-// awaitingController -- mode STATE, both reserved-today) are cleared; but
-// latched/qualified judgments from board #1 (lowBattery) and
-// slowly-meaningful fields (battery mV, gear, ersPercent, driveMode, and
-// the v2 operator config soundProfile/volume) hold their last-known value.
+// awaitingController -- mode STATE, command-class) are cleared: showcase is
+// LIVE (it keys engine ignition and the showcase halo), and this projection
+// is precisely what the protocol means by "a stale showcase indication must
+// not outlive the link". Latched/qualified judgments from board #1
+// (lowBattery) and slowly-meaningful fields (battery mV, gear, ersPercent,
+// driveMode, and the v2 operator config soundProfile/volume) hold their
+// last-known value.
 class Link2Monitor {
 public:
     explicit Link2Monitor(Link2MonitorConfig config = Link2MonitorConfig{});

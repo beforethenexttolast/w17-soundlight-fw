@@ -83,7 +83,7 @@ obligation is what makes protocol bumps a coordinated flash — see *v1 → v2* 
 | 10 | 1 | driveMode | 0 = TRAINING, 1 = RACE (gearbox), 2 = ERS (gearbox + ERS deploy). Receivers may vary engine character per mode; treat unknown values as 1 (RACE). |
 | 11 | 1 | soundProfile | **v2.** Engine voice: 0 = V10 (the default), 1 = V6 turbo-hybrid. Values ≥ 2 are **reserved**: receivers MUST fall back to 0 (V10) — a voice fallback, **never a frame rejection** — so a receiver that predates a future voice keeps making sound instead of going mute. Mirrors `driveMode`'s unknown-value rule. |
 | 12 | 1 | volume | **v2.** 0…100 engine-sound level. **0 = true silence** (bit-exact zero synth output), 100 = full output, applied in integer math at the synth's final gain stage; receivers clamp values >100 to 100. Scales **sound only, never lights**. Default 80 — loud-but-not-max: showpiece-loud out of the box with headroom left below full scale (`sound.volume` in the board-#1 tuning console). Failsafe silencing ALWAYS wins over this field (see the state-matrix note). |
-| 13 | 1 | modeFlags | **v2.** bit0 `showcase` — reserved for the accepted showcase-mode design (a future board-1 stationary-demo state asserts it; **current firmware always transmits 0**). bit1 `awaitingController` — reserved for the BT show-off design's §6.3 pairing-state surface (**always 0 today**). bits 2–7 spare: sender writes 0, **receivers mask/ignore, never reject** (same discipline as `flags` bit7). No receiver behavior may key off either named bit until its mode ships. |
+| 13 | 1 | modeFlags | **v2.** bit0 `showcase` — **LIVE (showcase-mode wave, 2026-08-17)**: board #1 booted in its stationary-demo SHOWCASE state. Boot-selected and constant for the whole session — set in **every** frame of such a boot (failsafe frames included), never in a DRIVE boot. Every other field stays truthful (`armed` 0, `throttlePercent` 0, real battery/steering); the `failsafe` flag follows the showcase-scoped rule under the state matrix below. Receivers key engine ignition on `armed \|\| showcase` and MUST treat the bit as **command-class on staleness** (zeroed in the local-failsafe projection, like `armed` — a stale showcase indication must not outlive the link). bit1 `awaitingController` — still reserved for the BT show-off design's §6.3 pairing-state surface (**always 0 today**; no receiver behavior may key off it until that mode ships). bits 2–7 spare: sender writes 0, **receivers mask/ignore, never reject** (same discipline as `flags` bit7). |
 
 ### v1 → v2 (2026-08-17) — a COORDINATED FLASH of both boards
 
@@ -93,12 +93,14 @@ selection and volume/quiet level from board #1's persisted settings to board #2'
 (owner decision 2026-08-17). Framing, the CRC algorithm, field order and every v1 field's
 offset are unchanged; the length byte goes 11 → 14 and the version byte 1 → 2.
 
-**Why `modeFlags` exists now, empty:** the accepted showcase-mode design (D2) and the BT
-show-off design (BT-7) had each earmarked `flags` bit7 — the byte's last free bit — for
+**Why `modeFlags` was introduced empty:** the accepted showcase-mode design (D2) and the
+BT show-off design (BT-7) had each earmarked `flags` bit7 — the byte's last free bit — for
 their own future state, a collision the owner resolved on 2026-08-17 with a dedicated
 `modeFlags` byte. Reserving both bits inside this bump means **one coordinated flash
 covers both future modes**: switching either mode on later is a sender-behavior change on
-an already-flashed wire format, not another protocol bump. `flags` bit7 stays reserved.
+an already-flashed wire format, not another protocol bump. That is exactly how bit0 then
+went live in the showcase-mode wave — a sender-behavior change, **no bump, no third
+coordinated flash**; bit1 still awaits the BT mode. `flags` bit7 stays reserved.
 (A 13-byte-payload v2 draft existed briefly during development and was **never flashed**;
 the shipped v2 is this 14-byte-payload form only — a length-13 frame is rejected exactly
 like a v1 frame.)
@@ -144,6 +146,29 @@ and treat an unknown value as RACE.
 | disarmed idle | 0 | 0 | 0 | 0 | live |
 | driving | as commanded | as filtered | 1 | 0 | live |
 
+**SHOWCASE boots** (`modeFlags` bit0 = 1 in every row below) add three rows and carry the
+protocol's **single showcase-scoped exception** — the `failsafe` flag rule:
+
+| condition (showcase boot) | throttlePercent | armed | failsafe | modeFlags bit0 |
+|---|---|---|---|---|
+| shelf demo — no CRSF link EVER this boot | 0 | 0 | **0** | 1 |
+| table demo — CRSF link up | 0 | 0 | 0 | 1 |
+| CRSF link existed, then died mid-session | 0 | 0 | **1** | 1 |
+
+In a SHOWCASE boot the drive-authority fields keep their exact semantics from the main
+matrix — `armed` can never assert (the arm-switch input is structurally pinned false into
+the unchanged arm gate) and `throttlePercent` remains "what the ESC is actually
+commanded," which is therefore always 0 — but `failsafe` follows a deliberately narrowed
+rule (owner decision D4, 2026-08-17): **assert only when the CRSF failsafe FSM is Safe
+AND a CRSF link existed at least once this boot** (`Safe && everLinkedThisBoot`). A shelf
+demo with no radio ever powered transmits `failsafe = 0` — nothing that matters is lost:
+there is no drive authority to lose, and the battery stays honestly monitored — while a
+table demo whose radio dies mid-session still transmits `failsafe = 1` and the receiver
+hazard-blinks. This is the NeverConnected-vs-Lost distinction the receiver already
+applies to *this* link's staleness, applied one level up to the CRSF link. **DRIVE boots
+are byte-unchanged**: `failsafe` is the FSM state, exactly the main matrix, test-pinned
+(a never-linked DRIVE boot still transmits `failsafe = 1`, today's behavior).
+
 `soundProfile` and `volume` are deliberately absent from this matrix: they are
 **configuration, not state**. The sender transmits its current persisted values in every
 frame under every condition above — they never change with failsafe/arm state. Receiver
@@ -181,3 +206,9 @@ A5 0E 02 2A E7 4C 03 DC 05 DC 1E 3C 02 01 50 00 5A
 Decoded: throttle +42 %, steering −25 %, DRS open, armed, ERS deploying at 60 %
 store in ERS mode, no failsafe, gear 3, wheel 1500 rpm, battery 7.900 V, engine
 voice V6 turbo-hybrid at volume 80/100, no mode flags set.
+
+A second golden pin covers the showcase bit: `test_showcase_golden_frame_bytes`
+re-encodes this same state with `showcase = true` — byte-identical except `modeFlags`
+`0x00` → `0x01` and crc `0x5A` → `0x8F` (the last three bytes read `50 01 8F`). That is
+a **codec pin, not a plausible frame**: a real SHOWCASE boot transmits `armed = 0` and
+`throttlePercent = 0` (state matrix above).

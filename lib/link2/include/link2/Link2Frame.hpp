@@ -34,10 +34,16 @@
 //                        fall back to 0 (V10), never reject the frame
 //   [12] volume          0..100 engine-sound level; 0 = TRUE silence, receivers
 //                        clamp >100 to 100; scales sound only, never lights
-//   [13] modeFlags       bit0 showcase, bit1 awaitingController -- BOTH
-//                        reserved for accepted future modes (sender transmits
-//                        0 today); bits 2-7 spare (sender writes 0, receivers
-//                        mask/ignore, never reject)
+//   [13] modeFlags       bit0 showcase -- LIVE: board #1 booted in its
+//                        stationary-demo SHOWCASE state (set in every frame
+//                        of such a boot, never in a DRIVE boot; every other
+//                        field stays truthful). Receivers key ignition/
+//                        presentation on it and treat it as command-class on
+//                        staleness (a stale showcase must not outlive the
+//                        link). bit1 awaitingController -- reserved for the
+//                        BT show-off pairing surface, always 0 today; bits
+//                        2-7 spare (sender writes 0, receivers mask/ignore,
+//                        never reject)
 //
 // v1 -> v2 (2026-08-17): appended soundProfile + volume (vision decision 15)
 // and modeFlags (owner 2026-08-17: showcase + BT show-off both wanted flags
@@ -81,15 +87,22 @@ inline constexpr uint8_t kSoundProfileCount = 2;    // first reserved value
 inline constexpr uint8_t kVolumeMax = 100;
 inline constexpr uint8_t kDefaultVolume = 80;
 
-// modeFlags bit positions (payload byte [13], v2). BOTH bits are reserved
-// for accepted-but-unbuilt future modes and are ALWAYS 0 from current
-// firmware; they exist now so that turning either mode on later is a
-// behavior change on an already-flashed wire format, not another
+// modeFlags bit positions (payload byte [13], v2). The byte was introduced
+// EMPTY in the v2 bump so that switching each accepted mode on later is a
+// sender-behavior change on an already-flashed wire format, not another
 // coordinated protocol bump. (Owner decision 2026-08-17: showcase D2 and
 // BT-7 both wanted flags bit7 -- collision resolved with this dedicated
-// byte; flags bit7 stays reserved.) Bits 2-7 are spare: sender writes 0,
-// receivers mask/ignore, never reject.
-inline constexpr uint8_t kModeFlagShowcase = 1u << 0;           // future stationary-demo state
+// byte; flags bit7 stays reserved.)
+//   bit0 showcase: LIVE since the showcase-mode wave. Truth on the wire --
+//     the bit says exactly "board #1 booted in SHOWCASE" (boot-selected,
+//     constant all session); armed/throttle/battery/steering stay truthful
+//     and the failsafe flag follows the showcase-scoped D4 rule in
+//     docs/link2_protocol.md. Receivers treat it as command-class: zeroed
+//     by the staleness projection, like `armed`.
+//   bit1 awaitingController: still reserved for the BT show-off pairing
+//     surface (§6.3), always 0 until that mode ships.
+// Bits 2-7 are spare: sender writes 0, receivers mask/ignore, never reject.
+inline constexpr uint8_t kModeFlagShowcase = 1u << 0;           // board-1 SHOWCASE boot state
 inline constexpr uint8_t kModeFlagAwaitingController = 1u << 1; // future BT pairing surface (§6.3)
 
 struct VehicleState {
@@ -109,7 +122,7 @@ struct VehicleState {
     uint8_t driveMode = 1;    // 0 TRAINING / 1 RACE (gearbox) / 2 ERS (gearbox+ERS)
     uint8_t soundProfile = kSoundProfileV10; // v2: engine voice; >= kSoundProfileCount reserved
     uint8_t volume = kDefaultVolume;         // v2: 0..100 sound level, 0 = true silence
-    bool showcase = false;           // v2 modeFlags bit0 -- reserved, always false today
+    bool showcase = false;           // v2 modeFlags bit0 -- board-1 SHOWCASE boot state
     bool awaitingController = false; // v2 modeFlags bit1 -- reserved, always false today
 };
 
