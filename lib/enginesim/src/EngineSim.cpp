@@ -131,7 +131,7 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
             blipActive_ = false;
         }
     }
-    if (ignition_ == Ignition::Running && state.throttlePercent >= 95 &&
+    if (ignition_ == Ignition::Running && state.throttlePercent >= config_.limiterThrottlePct &&
         rpm_ >= config_.maxRpm - config_.limiterBandRpm) {
         out_.limiterActive = true;
     }

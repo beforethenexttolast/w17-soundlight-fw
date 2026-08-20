@@ -39,8 +39,12 @@ struct EngineSimConfig {
 
     // Rev limiter: within this rpm of maxRpm at full throttle, cut ignition
     // in bursts (the iconic F1 buzz). Cut cadence handled in the synth via
-    // the limiter flag; here we just detect it.
+    // the limiter flag; here we just detect it. "Full throttle" for the gate
+    // means throttle >= limiterThrottlePct; ShowScript's unreachability
+    // static_asserts pin against this same field, so retuning the gate
+    // retunes the proof with it.
     uint16_t limiterBandRpm = 250;
+    uint16_t limiterThrottlePct = 95; // throttle gate (percent) for the limiter
 
     // Overrun crackle window: after a fast throttle drop from high rpm,
     // crackle is enabled for this long (the synth adds gated noise bursts).
@@ -52,6 +56,7 @@ struct EngineSimConfig {
         return idleRpm > crankRpm && maxRpm > idleRpm &&
                revUpPerMille > 0 && revDownPerMille > 0 &&
                idleWobbleRpm < idleRpm && limiterBandRpm < (maxRpm - idleRpm) &&
+               limiterThrottlePct > 0 && limiterThrottlePct <= 100 &&
                overrunHighRpmPct <= 100;
     }
 };

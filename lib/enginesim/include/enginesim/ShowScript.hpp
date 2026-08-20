@@ -24,7 +24,7 @@
 // The rev limiter and the overrun crackle are UNREACHABLE BY CONSTRUCTION,
 // not by tuning -- static_asserts below pin the envelope's ceiling against
 // the EngineSimConfig defaults on all three independent grounds:
-//   1. limiter needs throttle >= 95;         the script tops out at 30.
+//   1. limiter needs throttle >= limiterThrottlePct; the script tops out at 30.
 //   2. overrun needs a >= 40-point drop in ONE tick; a signal bounded by 30
 //      cannot drop by 40 from any value it can reach, margins irrelevant.
 //   3. overrun also needs rpm >= the 60 % band; a 30 % throttle target
@@ -46,7 +46,7 @@ inline constexpr uint32_t kShowBlipMarginMs = 500; // silence pad at slot edges
 // against the shipped EngineSimConfig defaults (main.cpp constructs the
 // EngineSim with exactly these; a config change that broke a bound would
 // stop this translation unit compiling, not soften the show at the bench).
-static_assert(kShowMaxBlipPct < 95,
+static_assert(kShowMaxBlipPct < EngineSimConfig{}.limiterThrottlePct,
               "show blip ceiling must stay below the limiter's full-throttle gate");
 static_assert(kShowMaxBlipPct < EngineSimConfig{}.overrunThrottleDrop,
               "a signal bounded by the blip ceiling can never produce the overrun drop");
