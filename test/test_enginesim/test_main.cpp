@@ -9,6 +9,16 @@ using link2::VehicleState;
 
 namespace {
 
+// The shipped config. Expectations that mean "the default" reference these
+// fields directly so a retuned default cannot leave a test pinning the old
+// number (same drift-proofing as ShowScript's static_asserts).
+constexpr EngineSimConfig kDefaults{};
+
+// Settled Running rpm at throttle 50: the sim's target formula evaluated
+// against the shipped defaults (9250 for idle 3500 / max 15000).
+constexpr uint16_t kSettledTarget =
+    kDefaults.idleRpm + (kDefaults.maxRpm - kDefaults.idleRpm) * 50 / 100;
+
 VehicleState armedAt(int8_t throttle, uint8_t gear = 1) {
     VehicleState s;
     s.armed = true;
@@ -57,7 +67,7 @@ void test_cranking_then_running_on_arm() {
     // Past crankMs: Running, settling toward idle.
     run(e, s, 40, 20, 420); // t ~ 1220
     TEST_ASSERT_EQUAL(Ignition::Running, e.engine().ignition);
-    TEST_ASSERT_UINT16_WITHIN(300, 3500, e.engine().engineRpm); // idle +/- wobble
+    TEST_ASSERT_UINT16_WITHIN(300, kDefaults.idleRpm, e.engine().engineRpm); // idle +/- wobble
 }
 
 void test_revs_up_toward_throttle_target() {
@@ -81,7 +91,7 @@ void test_rev_down_is_slower_than_rev_up() {
     EngineSim up;
     run(up, armedAt(50), 200, 20, 0); // settle at the throttle-50 target (9250)
     const uint16_t mid = up.engine().engineRpm;
-    TEST_ASSERT_UINT16_WITHIN(300, 9250, mid);
+    TEST_ASSERT_UINT16_WITHIN(300, kSettledTarget, mid);
 
     const uint32_t t = 200u * 20u;
     run(up, armedAt(100), 10, 20, t); // 200 ms toward full throttle
@@ -91,7 +101,7 @@ void test_rev_down_is_slower_than_rev_up() {
 
     EngineSim down;
     run(down, armedAt(50), 200, 20, 0); // same mid point
-    TEST_ASSERT_UINT16_WITHIN(300, 9250, down.engine().engineRpm);
+    TEST_ASSERT_UINT16_WITHIN(300, kSettledTarget, down.engine().engineRpm);
     run(down, armedAt(0), 10, 20, t); // 200 ms toward idle
     const uint16_t afterRevDown = down.engine().engineRpm;
     TEST_ASSERT_TRUE(afterRevDown < mid);   // moved down, not up/wrapped
@@ -142,7 +152,7 @@ void test_rev_down_is_monotonic_and_settles() {
     EngineSim e;
     run(e, armedAt(100), 200, 20, 0); // climb to a stable redline
     const uint16_t high = e.engine().engineRpm;
-    TEST_ASSERT_UINT16_WITHIN(300, 15000, high);
+    TEST_ASSERT_UINT16_WITHIN(300, kDefaults.maxRpm, high);
 
     const VehicleState idle = armedAt(0);
     uint32_t t = 200u * 20u;
@@ -158,12 +168,12 @@ void test_rev_down_is_monotonic_and_settles() {
         TEST_ASSERT_TRUE(now <= 15100); // stays in band, never wraps high
         TEST_ASSERT_TRUE(now >= 3300);  // never undershoots the idle floor
         prev = now;
-        if (now <= 3500 + 200) {
+        if (now <= kDefaults.idleRpm + 200) {
             reachedIdle = true;
         }
     }
     TEST_ASSERT_TRUE(reachedIdle);
-    TEST_ASSERT_UINT16_WITHIN(300, 3500, e.engine().engineRpm);
+    TEST_ASSERT_UINT16_WITHIN(300, kDefaults.idleRpm, e.engine().engineRpm);
 }
 
 void test_cranking_trajectory_is_bounded() {
@@ -177,12 +187,12 @@ void test_cranking_trajectory_is_bounded() {
     e.update(t, s);
     TEST_ASSERT_EQUAL(Ignition::Cranking, e.engine().ignition);
 
-    for (; t < 600; t += 20) {
+    for (; t < kDefaults.crankMs; t += 20) {
         e.update(t, s);
         if (e.engine().ignition == Ignition::Cranking) {
             // Cranking rpm decays 3500 -> 1800; never above the idle seed, never
             // wrapped high. Pre-fix, the negative gap wraps engineRpm well past this.
-            TEST_ASSERT_TRUE(e.engine().engineRpm <= 3500);
+            TEST_ASSERT_TRUE(e.engine().engineRpm <= kDefaults.idleRpm);
             TEST_ASSERT_TRUE(e.engine().engineRpm >= 1000);
         }
     }
@@ -190,7 +200,7 @@ void test_cranking_trajectory_is_bounded() {
     // Past crankMs -> Running (rpm reset to idle), settling near idle.
     run(e, s, 60, 20, t);
     TEST_ASSERT_EQUAL(Ignition::Running, e.engine().ignition);
-    TEST_ASSERT_UINT16_WITHIN(300, 3500, e.engine().engineRpm);
+    TEST_ASSERT_UINT16_WITHIN(300, kDefaults.idleRpm, e.engine().engineRpm);
 }
 
 void test_no_phantom_blip_on_first_state_or_failsafe_recovery() {
@@ -200,15 +210,14 @@ void test_no_phantom_blip_on_first_state_or_failsafe_recovery() {
     run(e, g4, 60, 20, 0); // Running
     // No way to directly read blip, but engineRpm should track the throttle
     // target smoothly with no downshift spike above the target.
-    const uint16_t target = 3500 + (15000 - 3500) * 50 / 100; // 9250
-    TEST_ASSERT_UINT16_WITHIN(600, target, e.engine().engineRpm);
+    TEST_ASSERT_UINT16_WITHIN(600, kSettledTarget, e.engine().engineRpm);
 }
 
 void test_limiter_flag_at_redline_full_throttle() {
     EngineSim e;
     run(e, armedAt(100), 200, 20, 0); // long full-throttle pull to redline
     TEST_ASSERT_TRUE(e.engine().limiterActive);
-    TEST_ASSERT_UINT16_WITHIN(300, 15000, e.engine().engineRpm);
+    TEST_ASSERT_UINT16_WITHIN(300, kDefaults.maxRpm, e.engine().engineRpm);
 }
 
 void test_overrun_window_on_fast_lift_from_high_rpm() {
@@ -249,9 +258,8 @@ void test_ers_whine_passthrough() {
 
 namespace {
 
-constexpr uint16_t kSettledTarget = 3500 + (15000 - 3500) * 50 / 100; // 9250
-constexpr uint32_t kBlipMs = 130;    // EngineSimConfig::blipMs default
-constexpr uint32_t kOverrunMs = 900; // EngineSimConfig::overrunMs default
+constexpr uint32_t kBlipMs = kDefaults.blipMs;
+constexpr uint32_t kOverrunMs = kDefaults.overrunMs;
 
 // Advance to a settled Running state at throttle 50 / the given gear, ending at
 // the returned absolute time. Long enough to finish cranking and reach target.
@@ -434,12 +442,12 @@ void test_crank_transition_across_wrap() {
     e.update(T0, s);
     TEST_ASSERT_EQUAL(Ignition::Cranking, e.engine().ignition);
 
-    // Before crankMs (600): elapsed 500, nowMs wrapped past UINT32_MAX.
-    e.update(static_cast<uint32_t>(T0 + 500u), s);
+    // Before crankMs: elapsed crankMs - 100, nowMs wrapped past UINT32_MAX.
+    e.update(static_cast<uint32_t>(T0 + (kDefaults.crankMs - 100u)), s);
     TEST_ASSERT_EQUAL(Ignition::Cranking, e.engine().ignition);
 
-    // Past crankMs: elapsed 700 -> Running.
-    e.update(static_cast<uint32_t>(T0 + 700u), s);
+    // Past crankMs: elapsed crankMs + 100 -> Running.
+    e.update(static_cast<uint32_t>(T0 + (kDefaults.crankMs + 100u)), s);
     TEST_ASSERT_EQUAL(Ignition::Running, e.engine().ignition);
 }
 
@@ -478,7 +486,7 @@ void test_showcase_cranks_then_runs() {
     TEST_ASSERT_EQUAL(Ignition::Cranking, e.engine().ignition);
     run(e, s, 60, 20, 20);
     TEST_ASSERT_EQUAL(Ignition::Running, e.engine().ignition);
-    TEST_ASSERT_UINT16_WITHIN(300, 3500, e.engine().engineRpm); // idle +/- wobble
+    TEST_ASSERT_UINT16_WITHIN(300, kDefaults.idleRpm, e.engine().engineRpm); // idle +/- wobble
 }
 
 // D4 row 3: board #1 keeps sending showcase=1 but with failsafe=1 after a
