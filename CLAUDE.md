@@ -49,7 +49,9 @@ pin header.
 - `lib/audiodecision` — pure audio-task decisions shared verbatim by `src/main.cpp` and the
   native tests: `synthVolumeFor` (ignition → base volume), `normalizeSoundProfile` (link2 v2
   `soundProfile` byte, reserved values fold to V10), `applyOperatorVolume` (composes the
-  link2 v2 `volume` byte), and the audio-heartbeat dead-man boundary.
+  link2 v2 `volume` byte), and the audio-heartbeat dead-man boundary. Also `classifyWrite` /
+  `runtimeActionFor` (SLR-4): any I2S short-write or driver error **permanently disables
+  audio for the rest of the boot, no retry** — the only non-`Continue` action is terminal.
 - `lib/audiostartup` — pure I2S startup sequencing (install → pins → DMA clear → task) with
   best-effort cleanup on a post-install failure; the real ESP-IDF calls live behind an `Ops`
   adapter.
@@ -68,7 +70,7 @@ pin header.
   the fundamental sits in a small speaker's band), per-rev AM, throttle-correlated noise,
   pitch-tracking ERS whine, param smoothing. Deterministic (seeded LFSR noise). Named
   voice profiles in `SynthProfiles.hpp` (V10 = boot default = wire 0, V6 turbo-hybrid = wire
-  1), selected at runtime by the link2 v2 `soundProfile` byte (owner decision 15,
+  1), selected at runtime by the link2 v2 `soundProfile` byte (vision decision 15,
   2026-08-16): `audiodecision::normalizeSoundProfile` folds any reserved value to V10 on the
   control core, two bits of the packed synth word carry it across cores, and
   `EngineSynth::setVoiceProfile` applies it on the audio task. Operator volume (link2 v2
