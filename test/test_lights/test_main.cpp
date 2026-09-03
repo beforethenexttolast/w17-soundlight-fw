@@ -280,9 +280,93 @@ void test_indicator_hysteresis_and_selfcancel() {
     r.render(s, light_status::Up, kIgnOff, 0, px);
     TEST_ASSERT_TRUE(!(segFirst(px, cfg.rightIndicator) == (Rgb{0, 0, 0})));
 
-    // Return under the off threshold: self-cancels.
+    // Return under the off threshold INSIDE the minimum-on window
+    // (correctness-1): the latch HOLDS, so it is still lit at an on-phase.
     s.steeringPercent = 10;
+    r.render(s, light_status::Up, kIgnOff, 300, px); // 300 % 660 < 330 -> lit half
+    TEST_ASSERT_TRUE(!(segFirst(px, cfg.rightIndicator) == (Rgb{0, 0, 0})));
+
+    // Past the window, sampled at an on-phase where a still-latched indicator
+    // WOULD be lit: it self-cancels.
+    r.render(s, light_status::Up, kIgnOff, 700, px); // elapsed 700 >= 660; 700 % 660 = 40
+    TEST_ASSERT_TRUE(segFirst(px, cfg.rightIndicator) == (Rgb{0, 0, 0}));
+}
+
+namespace {
+
+// Drives a `flickMs` steering flick starting at `startMs` and returns how many
+// 1 ms samples inside the minimum-on window show the indicator lit. A fresh
+// renderer per call: the latch state is the thing under test.
+uint32_t litMsDuringFlick(int8_t steerPeak, const lights::Segment& seg, uint32_t startMs,
+                          uint32_t flickMs) {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s = upState();
+    uint32_t lit = 0;
+    for (uint32_t t = startMs; t < startMs + cfg.indicatorPeriodMs; ++t) {
+        s.steeringPercent = (t < startMs + flickMs) ? steerPeak : 0;
+        r.render(s, light_status::Up, kIgnOff, t, px);
+        if (!(segFirst(px, seg) == (Rgb{0, 0, 0}))) ++lit;
+    }
+    return lit;
+}
+
+} // namespace
+
+// correctness-1: LightRenderer.hpp promised "minimum-on so a flick still
+// completes one blink" and only hysteresis was implemented. A 240 ms flick
+// landing in the blink's dark half latched on and cancelled again without
+// lighting a single pixel -- invisible, on the cue booklet :172 sells as
+// "blinkers that follow the steering".
+//
+// Checked at every interesting phase offset, both sides (the sim feeder's
+// triangle() never goes negative, so the LEFT indicator had neither a demo
+// nor a test before this): whatever the phase, one full lit half-cycle
+// (indicatorPeriodMs / 2, minus the 1 ms the sampling grid can clip) falls
+// inside the minimum-on window.
+void test_indicator_flick_still_completes_one_blink() {
+    const uint32_t halfCycle = cfg.indicatorPeriodMs / 2u;
+    const uint32_t kStarts[] = {0, 100, 329, 330, 500, 659};
+    for (uint32_t start : kStarts) {
+        const uint32_t litRight = litMsDuringFlick(100, cfg.rightIndicator, start, 240);
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT32(halfCycle - 1u, litRight);
+        const uint32_t litLeft = litMsDuringFlick(-100, cfg.leftIndicator, start, 240);
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT32(halfCycle - 1u, litLeft);
+    }
+
+    // Without the minimum-on the same flick is invisible: 240 ms starting at
+    // phase 330 sits entirely inside the dark half. Pinned as arithmetic so
+    // the test cannot quietly become a tautology.
+    TEST_ASSERT_TRUE(330u + 240u <= cfg.indicatorPeriodMs);
+
+    // And the latch really does let go afterwards -- min-on defers the
+    // self-cancel, it does not remove it.
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s = upState();
+    s.steeringPercent = 100;
+    r.render(s, light_status::Up, kIgnOff, 330, px);
+    s.steeringPercent = 0;
+    r.render(s, light_status::Up, kIgnOff, 330 + cfg.indicatorPeriodMs, px); // cancels here
+    r.render(s, light_status::Up, kIgnOff, 1320, px);                        // 1320 % 660 = 0
+    TEST_ASSERT_TRUE(segFirst(px, cfg.rightIndicator) == (Rgb{0, 0, 0}));
+}
+
+// The minimum-on window must not out-rank a deliberate opposite lock: a
+// driver who steers hard the other way inside the window gets the other
+// indicator at once, never both (which would read as hazard).
+void test_opposite_lock_swaps_sides_inside_the_minimum_on_window() {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s = upState();
+
+    s.steeringPercent = 100;
     r.render(s, light_status::Up, kIgnOff, 0, px);
+    TEST_ASSERT_TRUE(!(segFirst(px, cfg.rightIndicator) == (Rgb{0, 0, 0})));
+
+    s.steeringPercent = -100; // 100 ms later, well inside the 660 ms window
+    r.render(s, light_status::Up, kIgnOff, 100, px);
+    TEST_ASSERT_TRUE(!(segFirst(px, cfg.leftIndicator) == (Rgb{0, 0, 0})));
     TEST_ASSERT_TRUE(segFirst(px, cfg.rightIndicator) == (Rgb{0, 0, 0}));
 }
 
@@ -842,6 +926,8 @@ int main(int, char**) {
     RUN_TEST(test_drs_open_lights_green_bar_edges);
     RUN_TEST(test_drs_tell_never_masks_brake_light);
     RUN_TEST(test_indicator_hysteresis_and_selfcancel);
+    RUN_TEST(test_indicator_flick_still_completes_one_blink);
+    RUN_TEST(test_opposite_lock_swaps_sides_inside_the_minimum_on_window);
     RUN_TEST(test_rain_light_flashes_only_while_harvesting_in_ers_mode);
     RUN_TEST(test_rain_light_ignores_deploy_only);
     RUN_TEST(test_halo_teal_armed_dim_when_disarmed);

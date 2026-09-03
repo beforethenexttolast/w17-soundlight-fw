@@ -153,7 +153,11 @@ struct LightConfig {
 
     // Turn-indicator steering thresholds (normalized -100..100 from the
     // frame's steeringPercent) with hysteresis + minimum-on so a flick still
-    // completes one blink.
+    // completes one blink. The minimum-on window is one indicatorPeriodMs
+    // measured from the latch's rising edge (LightRenderer.cpp): the blink is
+    // free-running, so any window that long contains a whole lit half-cycle
+    // wherever it starts. It applies to SELF-CANCEL only -- steering hard
+    // the other way is a deliberate new gesture and swaps sides at once.
     int8_t indicatorOnPercent = 40;
     int8_t indicatorOffPercent = 20;
 
@@ -262,9 +266,14 @@ private:
 
     LightConfig config_;
 
-    // Indicator hysteresis state (left/right latched by steering).
+    // Indicator hysteresis state (left/right latched by steering) plus the
+    // minimum-on window: nowMs at the latch's most recent false->true edge.
+    // No companion flag is needed (unlike the flash/grace windows): the
+    // stamp is only ever read while a latch is on, and a latch can only be
+    // on because an edge stamped it.
     bool leftOn_ = false;
     bool rightOn_ = false;
+    uint32_t indicatorStartMs_ = 0;
 
     // Harvest detection: remember the last ersPercent and when it last rose.
     uint8_t lastErsPercent_ = 0;

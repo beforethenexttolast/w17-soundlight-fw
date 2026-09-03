@@ -365,9 +365,23 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
         fill(px, config_.rainLight, c);
     }
 
-    // --- Indicators: steering-threshold with hysteresis + min-on (one full
-    // blink cycle guaranteed via free-running phase). ---
+    // --- Indicators: steering-threshold with hysteresis + minimum-on.
+    //
+    // The minimum-on half was documented and NOT implemented until
+    // correctness-1: the blink is a free-running square wave, so a 240 ms
+    // flick that happened to land in a dark half-cycle latched on and
+    // self-cancelled again without ever lighting a pixel. The latch now
+    // survives one full indicatorPeriodMs from its rising edge, and any
+    // window that long contains a complete lit half-cycle no matter where it
+    // starts (worst case: the flick begins 1 ms before an on-half ends, and
+    // the NEXT on-half lands inside the window with 1 ms to spare).
+    //
+    // Deliberately self-cancel only. Steering hard the other way still swaps
+    // sides immediately -- that is a new gesture, not an expired one, and
+    // both indicators blinking at once would read as hazard. ---
     const int8_t steer = state.steeringPercent;
+    const bool wasLeftOn = leftOn_;
+    const bool wasRightOn = rightOn_;
     if (steer >= config_.indicatorOnPercent) {
         rightOn_ = true;
         leftOn_ = false;
@@ -375,8 +389,15 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
         leftOn_ = true;
         rightOn_ = false;
     } else if (steer > -config_.indicatorOffPercent && steer < config_.indicatorOffPercent) {
-        leftOn_ = false;
-        rightOn_ = false;
+        // Wrap-safe elapsed compare, same convention as the other timed
+        // effects in this file.
+        if (static_cast<uint32_t>(nowMs - indicatorStartMs_) >= config_.indicatorPeriodMs) {
+            leftOn_ = false;
+            rightOn_ = false;
+        }
+    }
+    if ((leftOn_ && !wasLeftOn) || (rightOn_ && !wasRightOn)) {
+        indicatorStartMs_ = nowMs;
     }
     const bool indBlink = blinkOn(nowMs, config_.indicatorPeriodMs);
     if (leftOn_ && indBlink) {
