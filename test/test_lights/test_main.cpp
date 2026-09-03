@@ -612,6 +612,126 @@ void test_showcase_breathe_distinct_from_grace_breathe() {
     TEST_ASSERT_TRUE(show[cfg.halo.start] == showAt1000); // 3000 ms apart: same
 }
 
+// --- sl:safety-1 (3): the minimum-rendered-duty floor ------------------------
+//
+// The defect this pins: with the cap applied before gamma, the quiet palette
+// entries rendered at PWM 1 and the two assertions that existed
+// (anyNonBlack / "not amber") both passed happily on a strip nobody could
+// see. Every state whose JOB is to be seen while quiet is checked here
+// through the real renderer, in rendered duty, at the shipped config.
+//
+// The absolute number is a floor, not a verdict: whether 6/255 reads in
+// daylight is a bench judgement ([bench-TBD]; open_questions.md #55).
+
+namespace {
+
+uint8_t maxChannel(Rgb c) {
+    const uint8_t rg = c.r > c.g ? c.r : c.g;
+    return rg > c.b ? rg : c.b;
+}
+
+} // namespace
+
+void test_every_designed_visible_state_clears_the_minimum_duty() {
+    const uint8_t kMin = lights::kMinVisibleDuty;
+    Rgb px[kNumPixels];
+
+    // 1. Disarmed on a live link: dim-white halo AND the dim red tail.
+    {
+        LightRenderer r;
+        VehicleState disarmed;
+        disarmed.armed = false;
+        disarmed.failsafe = false;
+        r.render(disarmed, light_status::Up, kIgnOff, 0, px);
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, maxChannel(px[cfg.halo.start]));
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, maxChannel(segFirst(px, cfg.brake)));
+    }
+
+    // 2. Armed halo teal (the state the disarmed one must stay below).
+    {
+        LightRenderer r;
+        r.render(upState(), light_status::Up, kIgnOff, 0, px);
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, maxChannel(px[cfg.halo.start]));
+    }
+
+    // 3. NeverConnected grace breathe AT ITS PEAK (it dips to black by
+    // design -- that is the axis that tells it from the showcase breathe).
+    {
+        LightRenderer r;
+        VehicleState defaults;
+        r.render(defaults, light_status::NeverConnected, kIgnOff, 0, px); // seed
+        uint8_t peak = 0;
+        for (uint32_t t = 0; t <= 2000; t += 25) {
+            r.render(defaults, light_status::NeverConnected, kIgnOff, t, px);
+            const uint8_t m = maxChannel(px[cfg.halo.start]);
+            if (m > peak) peak = m;
+        }
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, peak);
+    }
+
+    // 4. Showcase breathe AT ITS FLOOR: this one never dips dark, so the
+    // MINIMUM over a whole cycle is what must clear the bar -- and the tail
+    // stays lit under it.
+    {
+        LightRenderer r;
+        const VehicleState s = showcaseUp();
+        uint8_t floorSeen = 255;
+        for (uint32_t t = 0; t <= 3000; t += 25) {
+            r.render(s, light_status::Up, kIgnRunning, t, px);
+            const uint8_t m = maxChannel(px[cfg.halo.start]);
+            if (m < floorSeen) floorSeen = m;
+            TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, maxChannel(segFirst(px, cfg.brake)));
+        }
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, floorSeen);
+    }
+
+    // 5. Failsafe hazard at an on-phase: every pixel amber, all of them lit.
+    {
+        LightRenderer r;
+        VehicleState fs = upState();
+        fs.failsafe = true;
+        r.render(fs, light_status::Up, kIgnOff, 0, px); // 0 % 500 < 250 -> on
+        for (uint8_t i = 0; i < kNumPixels; ++i) {
+            TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, maxChannel(px[i]));
+        }
+    }
+
+    // 6. Low-battery pulse at its peak (period/2 -> triangle at full).
+    {
+        LightRenderer r;
+        VehicleState low = upState();
+        low.lowBattery = true;
+        r.render(low, light_status::Up, kIgnOff, cfg.lowBatteryPeriodMs / 2, px);
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, maxChannel(px[cfg.halo.start]));
+    }
+
+    // 7. The loud functional states, for completeness: brake, indicators,
+    // rain light and the DRS tell all sit at the top of the range.
+    {
+        LightRenderer r;
+        VehicleState s = upState();
+        s.braking = true;
+        s.drsOpen = true;
+        s.steeringPercent = 100;
+        r.render(s, light_status::Up, kIgnOff, 0, px);
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, maxChannel(segFirst(px, cfg.brake)));
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kMin, maxChannel(segFirst(px, cfg.rightIndicator)));
+    }
+}
+
+// The floor is a real constraint, not a tautology: at the pre-fix palette
+// value (40) the disarmed halo rendered at PWM 1, which is what this whole
+// finding was about. Pin the arithmetic so nobody "simplifies" the palette
+// back.
+void test_the_old_dim_value_would_fail_the_minimum() {
+    TEST_ASSERT_EQUAL_UINT8(1, lights::renderedDuty(40, LightConfig{}.maxBrightness));
+    TEST_ASSERT_TRUE(lights::renderedDuty(40, LightConfig{}.maxBrightness) <
+                     lights::kMinVisibleDuty);
+    // ...and the shipped values clear it by construction.
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT8(lights::kMinVisibleDuty,
+                                       lights::renderedDuty(105, LightConfig{}.maxBrightness));
+}
+
 // Faults outrank the show, renderer-level (defense in depth under the
 // monitor's own zero-on-Lost projection): a Lost link hazards even if a
 // stale frame still says showcase, and a frame-level failsafe (D4 row 3:
@@ -734,6 +854,8 @@ int main(int, char**) {
     RUN_TEST(test_low_battery_min_valid_period_renders);
     RUN_TEST(test_showcase_halo_breathes_teal_with_tail_lit);
     RUN_TEST(test_showcase_breathe_distinct_from_grace_breathe);
+    RUN_TEST(test_every_designed_visible_state_clears_the_minimum_duty);
+    RUN_TEST(test_the_old_dim_value_would_fail_the_minimum);
     RUN_TEST(test_showcase_lost_or_failsafe_is_hazard_not_show);
     RUN_TEST(test_showcase_low_battery_pulse_wins);
     RUN_TEST(test_showcase_brake_and_indicators_still_outrank_base);

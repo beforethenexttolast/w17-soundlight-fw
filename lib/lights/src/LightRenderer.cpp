@@ -5,9 +5,18 @@ namespace lights {
 namespace {
 
 // Petronas teal, F1 palette.
+//
+// THE QUIET ENTRIES ARE SET AGAINST THE CAP, NOT BY EYE. The brightness cap
+// is applied before gamma (LightConfig::maxBrightness), so a full channel
+// renders at 40/255 and the old kDimWhite/kDimRed value of 40 rendered at
+// PWM 1 -- invisible, which is what sl:safety-1 caught. Each quiet entry is
+// now the SMALLEST value whose brightest channel clears kMinVisibleDuty at
+// the default cap, keeping the original hue ratios (dim white was 40:40:46,
+// now 91:91:105). The static_asserts at the bottom of this namespace hold
+// the line; test_lights checks it through the real renderer.
 constexpr Rgb kTeal{0, 130, 120};
-constexpr Rgb kDimWhite{40, 40, 46};
-constexpr Rgb kDimRed{40, 0, 0};
+constexpr Rgb kDimWhite{91, 91, 105};
+constexpr Rgb kDimRed{105, 0, 0};
 constexpr Rgb kBrightRed{255, 0, 0};
 constexpr Rgb kAmber{255, 90, 0};
 constexpr Rgb kWhite{255, 255, 255};
@@ -38,16 +47,28 @@ constexpr Rgb kDrsGreen{0, 255, 0};
 // look can only ever render on a live link). If the two looks could be
 // confused, a dead harness would read as a healthy shelf demo -- the exact
 // calm-pretty-lights-during-a-fault trap the design exists to exclude.
-// Distinct on four axes, none subtle:
-//   - color family: pure teal (r == 0) vs the grace breathe's cyan-white
-//     tinge (its r channel is lvl/6, nonzero when lit);
-//   - period: 3 s vs the grace's 2 s;
-//   - floor: never dips dark (40 %..100 % of teal) vs grace touching black;
+// Distinct on four axes, in the order the eye can actually use them AFTER
+// cap + gamma (the honest ranking, sl:safety-1):
+//   - floor: the showcase breathe never dips dark (duty 6..9 across the
+//     cycle) vs the grace breathe touching black once every 2 s. This is
+//     the loudest axis: one of them goes out, the other never does.
 //   - context: dim red tail LIT (base layer) vs grace's halo-only frame.
-// Also distinct from solid armed teal (steady, full) and dim-white
+//   - period: 3 s vs the grace's 2 s.
+//   - color family: pure teal (r == 0) vs the grace breathe's cyan-white
+//     tinge (r nonzero when lit). Weakest of the four -- the tinge is
+//     1/255 of red against 6/255 of teal at the grace peak, so treat it as
+//     a tie-breaker in a photo, not something a person reads across a room.
+// Also distinct from solid armed teal (steady, duty 9) and dim-white
 // disarmed (steady, gray). Amber/red stay reserved for faults/alerts.
 constexpr uint32_t kShowcaseBreathePeriodMs = 3000;
-constexpr uint32_t kShowcaseBreatheFloor = 102; // 40% of full scale
+// The dip of the breathe. Raised from 102 (40 % of scale, which rendered at
+// PWM 1 -- the "floor" was black) to the smallest level whose teal clears
+// kMinVisibleDuty. The cost of keeping cap-then-gamma (OD-12 Q1(a)) is a
+// SHALLOW breathe: the whole usable range at this cap is duty 0..40 and the
+// show now swings 6..9. Whether that reads as breathing in daylight is a
+// bench judgement ([bench-TBD], open_questions.md #55); the alternative --
+// dipping into invisibility -- is not a judgement call, it is a defect.
+constexpr uint32_t kShowcaseBreatheFloor = 206; // ~81% of full scale
 constexpr Rgb showcaseBreathe(uint32_t nowMs) {
     const uint32_t phase = nowMs % kShowcaseBreathePeriodMs;
     const uint32_t half = kShowcaseBreathePeriodMs / 2u;
@@ -56,6 +77,23 @@ constexpr Rgb showcaseBreathe(uint32_t nowMs) {
         kShowcaseBreatheFloor + tri * (255u - kShowcaseBreatheFloor) / half;
     return Rgb{0, static_cast<uint8_t>(kTeal.g * lvl / 255u),
                static_cast<uint8_t>(kTeal.b * lvl / 255u)};
+}
+
+// NeverConnected grace breathe: the calm "waiting for board #1" look. It
+// breathes from BLACK (deliberate -- the distinctness axis above) up to this
+// peak, which is the smallest cyan-white that clears kMinVisibleDuty on its
+// brightest channel. The 1:2:2 red:green:blue ratio is the original
+// lvl/6 : lvl/3 : lvl/3 tinge, preserved.
+constexpr uint32_t kGraceBreathePeriodMs = 2000;
+constexpr Rgb kGraceBreathePeak{55, 110, 110};
+constexpr Rgb graceBreathe(uint32_t nowMs) {
+    const uint32_t phase = nowMs % kGraceBreathePeriodMs;
+    const uint32_t half = kGraceBreathePeriodMs / 2u;
+    const uint32_t tri = phase < half ? phase : (kGraceBreathePeriodMs - phase);
+    const uint32_t lvl = tri * 255u / half; // 0..255..0
+    return Rgb{static_cast<uint8_t>(kGraceBreathePeak.r * lvl / 255u),
+               static_cast<uint8_t>(kGraceBreathePeak.g * lvl / 255u),
+               static_cast<uint8_t>(kGraceBreathePeak.b * lvl / 255u)};
 }
 
 // The static power budget in LightConfig::valid() models the worst case as
@@ -90,6 +128,50 @@ Rgb applyBrightnessAndGamma(Rgb c, uint8_t maxBrightness) {
     auto ch = [&](uint8_t x) { return renderedDuty(x, maxBrightness); };
     return Rgb{ch(c.r), ch(c.g), ch(c.b)};
 }
+
+// ---- The minimum-visible contract, checked where the palette is defined ----
+//
+// A state the design intends someone to SEE must render at least
+// kMinVisibleDuty on its brightest channel at the default cap. These
+// static_asserts are the compile-time half (a palette edit that drops a quiet
+// state back to PWM 1 fails the build); test_lights drives the same claim
+// through the real renderer, states rather than colors.
+constexpr uint8_t maxRenderedDuty(Rgb c) {
+    const uint8_t cap = LightConfig{}.maxBrightness;
+    const uint8_t r = renderedDuty(c.r, cap);
+    const uint8_t g = renderedDuty(c.g, cap);
+    const uint8_t b = renderedDuty(c.b, cap);
+    const uint8_t rg = r > g ? r : g;
+    return rg > b ? rg : b;
+}
+static_assert(maxRenderedDuty(kDimWhite) >= kMinVisibleDuty, "disarmed halo renders invisible");
+static_assert(maxRenderedDuty(kDimRed) >= kMinVisibleDuty, "dim red tail renders invisible");
+static_assert(maxRenderedDuty(kTeal) >= kMinVisibleDuty, "armed halo renders invisible");
+static_assert(maxRenderedDuty(kAmber) >= kMinVisibleDuty, "hazard/indicator amber invisible");
+static_assert(maxRenderedDuty(kBrightRed) >= kMinVisibleDuty, "brake light renders invisible");
+static_assert(maxRenderedDuty(kWhite) >= kMinVisibleDuty, "rain light renders invisible");
+static_assert(maxRenderedDuty(kDrsGreen) >= kMinVisibleDuty, "DRS tell renders invisible");
+static_assert(maxRenderedDuty(kIgnitionCyan) >= kMinVisibleDuty, "starter comet head invisible");
+static_assert(maxRenderedDuty(showcaseBreathe(0)) >= kMinVisibleDuty,
+              "showcase breathe dips out of sight");
+static_assert(maxRenderedDuty(graceBreathe(kGraceBreathePeriodMs / 2)) >= kMinVisibleDuty,
+              "never-connected breathe peaks out of sight");
+// DELIBERATE EXCLUSIONS, so their absence above is not read as an oversight:
+// the two comet TRAIL pixels (duty 4 and 1) are a fading gradient behind a
+// duty-40 head, not states that stand alone; the low-battery and hazard
+// pulses are checked at their PEAK (kBrightRed / kAmber above) because a
+// blink whose dark half is dark is the point.
+static_assert(maxRenderedDuty(kIgnitionTrail) < maxRenderedDuty(kIgnitionCyan),
+              "the comet trail must stay dimmer than its head");
+static_assert(maxRenderedDuty(kIgnitionTrail2) <= maxRenderedDuty(kIgnitionTrail),
+              "the comet tail must stay dimmer than the trail");
+// The quiet states must also stay READABLE against their loud counterparts:
+// a dim tail that is nearly as bright as the brake light is a brake light
+// that never seems to come on.
+static_assert(maxRenderedDuty(kDimRed) * 3 <= maxRenderedDuty(kBrightRed),
+              "dim tail too close to the brake light");
+static_assert(maxRenderedDuty(kDimWhite) < maxRenderedDuty(kTeal),
+              "disarmed halo must read dimmer than the armed halo");
 
 // Channel-wise linear crossfade `from` -> `to` at num/den (num < den, den > 0
 // by LightConfig::valid()). Integer math; both endpoints are exact.
@@ -150,12 +232,7 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
         neverConnectedExpired =
             static_cast<uint32_t>(nowMs - graceStartMs_) >= config_.neverConnectedGraceMs;
         if (!neverConnectedExpired) {
-            const uint32_t phase = nowMs % 2000;
-            const uint32_t tri = phase < 1000 ? phase : (2000 - phase); // 0..1000..0
-            const uint8_t lvl = static_cast<uint8_t>(tri * 255 / 1000);
-            Rgb breathe{static_cast<uint8_t>(lvl / 6), static_cast<uint8_t>(lvl / 3),
-                        static_cast<uint8_t>(lvl / 3)};
-            fill(px, config_.halo, breathe);
+            fill(px, config_.halo, graceBreathe(nowMs));
             for (uint8_t i = 0; i < kNumPixels; ++i) {
                 outPixels[i] = applyBrightnessAndGamma(px[i], config_.maxBrightness);
             }
