@@ -1,7 +1,7 @@
 {
   "name": "lights_hal_esp32",
   "version": "0.1.0",
-  "description": "ESP32 WS2812 output via Adafruit NeoPixel, behind ILedStrip. Hardware-only; referenced only from src/main.cpp.",
+  "description": "ESP32 WS2812 output via Adafruit NeoPixel; the pure LightRenderer's Rgb[30] output array is the seam (no ILedStrip interface exists). Hardware-only; referenced only from src/main.cpp.",
   "frameworks": "arduino",
   "platforms": "espressif32",
   "dependencies": {
