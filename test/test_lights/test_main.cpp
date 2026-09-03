@@ -606,6 +606,84 @@ void test_low_battery_min_valid_period_renders() {
     TEST_ASSERT_FALSE(haloLow == haloNormal);
 }
 
+// --- sl:correctness-4: the composite order matches the declared order -------
+//
+// LightRenderer.hpp declares base -> DRS -> brake/rain/indicators ->
+// low-battery -> hazard. The low-battery block used to run BEFORE the
+// functional layer, so the declared priority was inverted. With the shipped
+// segments nothing overlaps and nothing rendered differently -- which is
+// exactly why it went unnoticed -- so the proof has to use an OVERLAPPING
+// segment config, and the segments are an explicit bench tunable.
+
+void test_low_battery_outranks_the_functional_layer_when_segments_overlap() {
+    // A time where the indicator blink is ON (314 % 660 < 330) and the
+    // low-battery triangle is part-way up (tri 314 -> level 100), so the
+    // pulse color is distinguishable from both amber and the brake red.
+    const uint32_t t = 314;
+
+    // 1. Halo widened over the LEFT indicator: the alert wins the pixel, and
+    // "wins" is visible as the absence of amber's green channel.
+    {
+        LightConfig c;
+        c.halo = lights::Segment{22, 4}; // exactly the left indicator
+        TEST_ASSERT_TRUE(c.valid());
+        LightRenderer r(c);
+        Rgb px[kNumPixels];
+        VehicleState s = upState();
+        s.steeringPercent = -100; // left indicator latched on
+        s.lowBattery = true;
+        r.render(s, light_status::Up, kIgnOff, t, px);
+        const Rgb shared = px[c.leftIndicator.start];
+        TEST_ASSERT_EQUAL_UINT8(0, shared.g); // amber would have g > 0
+        TEST_ASSERT_EQUAL_UINT8(0, shared.b);
+        TEST_ASSERT_TRUE(shared.r > 0); // and it is lit, not blanked
+    }
+
+    // 2. Halo widened over the BRAKE bar: the pulse owns it at its own
+    // level, not the brake light's full red.
+    {
+        LightConfig c;
+        c.halo = lights::Segment{0, 6}; // exactly the brake bar
+        TEST_ASSERT_TRUE(c.valid());
+        LightRenderer r(c);
+        Rgb px[kNumPixels];
+        VehicleState s = upState();
+        s.braking = true;
+        s.lowBattery = true;
+        r.render(s, light_status::Up, kIgnOff, t, px);
+        const Rgb shared = px[c.brake.start];
+        TEST_ASSERT_EQUAL_UINT8(lights::renderedDuty(100, c.maxBrightness), shared.r);
+        TEST_ASSERT_TRUE(shared.r < lights::renderedDuty(255, c.maxBrightness));
+    }
+
+    // 3. ...and the failsafe hazard still outranks the alert, unchanged.
+    {
+        LightConfig c;
+        c.halo = lights::Segment{0, 30};
+        LightRenderer r(c);
+        Rgb px[kNumPixels];
+        VehicleState s = upState();
+        s.lowBattery = true;
+        s.failsafe = true;
+        r.render(s, light_status::Up, kIgnOff, 0, px);
+        TEST_ASSERT_TRUE(allAmber(px));
+    }
+}
+
+// The default segments really are disjoint from the halo, which is why the
+// inversion was invisible -- pin that so the test above cannot silently
+// become the only thing standing between a bench tune and a masked alert.
+void test_default_segments_do_not_overlap_the_halo() {
+    const LightConfig c;
+    const lights::Segment functional[] = {c.brake, c.rainLight, c.leftIndicator,
+                                          c.rightIndicator};
+    for (const lights::Segment& seg : functional) {
+        const uint16_t segEnd = static_cast<uint16_t>(seg.start) + seg.len;
+        const uint16_t haloEnd = static_cast<uint16_t>(c.halo.start) + c.halo.len;
+        TEST_ASSERT_TRUE(segEnd <= c.halo.start || seg.start >= haloEnd);
+    }
+}
+
 // --- Showcase halo (owner decision D6) ---------------------------------------
 
 namespace {
@@ -938,6 +1016,8 @@ int main(int, char**) {
     RUN_TEST(test_ignition_config_validation_bounds);
     RUN_TEST(test_low_battery_period_validation_boundary);
     RUN_TEST(test_low_battery_min_valid_period_renders);
+    RUN_TEST(test_low_battery_outranks_the_functional_layer_when_segments_overlap);
+    RUN_TEST(test_default_segments_do_not_overlap_the_halo);
     RUN_TEST(test_showcase_halo_breathes_teal_with_tail_lit);
     RUN_TEST(test_showcase_breathe_distinct_from_grace_breathe);
     RUN_TEST(test_every_designed_visible_state_clears_the_minimum_duty);

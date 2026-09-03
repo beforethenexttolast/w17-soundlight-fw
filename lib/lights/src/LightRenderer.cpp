@@ -337,15 +337,6 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
         }
     }
 
-    // --- Low-battery: slow red pulse on the halo (alert layer). ---
-    if (state.lowBattery) {
-        const uint32_t phase = nowMs % config_.lowBatteryPeriodMs;
-        const uint32_t half = config_.lowBatteryPeriodMs / 2u;
-        const uint32_t tri = phase < half ? phase : (config_.lowBatteryPeriodMs - phase);
-        const uint8_t lvl = static_cast<uint8_t>(tri * 255 / half);
-        fill(px, config_.halo, Rgb{lvl, 0, 0});
-    }
-
     // --- Functional layer: brake. ---
     if (state.braking) {
         fill(px, config_.brake, kBrightRed);
@@ -405,6 +396,27 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
     }
     if (rightOn_ && indBlink) {
         fill(px, config_.rightIndicator, kAmber);
+    }
+
+    // --- ALERT layer: the low-battery halo pulse (D5). Composited AFTER the
+    // functional layer, which is the order LightRenderer.hpp has always
+    // declared (base -> DRS -> brake/rain/indicators -> low-battery ->
+    // hazard) and the reverse of where this block used to sit
+    // (correctness-4).
+    //
+    // Moot with the shipped segments -- the halo does not overlap brake,
+    // rain or the indicators -- so nothing renders differently today. Fixed
+    // in the CODE rather than by relaxing the header comment because the
+    // segments are an explicit bench tunable: the day someone widens the
+    // halo over a functional segment, "head home now" is the cue that must
+    // not be chopped up by a blinker. The failsafe hazard still outranks it
+    // (early return above). ---
+    if (state.lowBattery) {
+        const uint32_t phase = nowMs % config_.lowBatteryPeriodMs;
+        const uint32_t half = config_.lowBatteryPeriodMs / 2u;
+        const uint32_t tri = phase < half ? phase : (config_.lowBatteryPeriodMs - phase);
+        const uint8_t lvl = static_cast<uint8_t>(tri * 255 / half);
+        fill(px, config_.halo, Rgb{lvl, 0, 0});
     }
 
     for (uint8_t i = 0; i < kNumPixels; ++i) {
