@@ -113,6 +113,14 @@ static_assert(channelSum(kIgnitionTrail) <= kBudgetModelChannelSum, "trail excee
 static_assert(channelSum(kIgnitionTrail2) <= kBudgetModelChannelSum, "trail exceeds budget model");
 static_assert(channelSum(kTeal) <= kBudgetModelChannelSum, "halo teal exceeds budget model");
 static_assert(channelSum(kDrsGreen) <= kBudgetModelChannelSum, "DRS green exceeds budget model");
+// Also halo-covering (disarmed dim-white halo, NeverConnected grace peak) --
+// raised by sl:safety-1's minimum-visible-duty fix, so pin them here too
+// rather than trusting that a floor raised for visibility stayed under the
+// ceiling raised for current.
+static_assert(channelSum(kDimWhite) <= kBudgetModelChannelSum,
+              "disarmed halo exceeds budget model");
+static_assert(channelSum(kGraceBreathePeak) <= kBudgetModelChannelSum,
+              "grace breathe peak exceeds budget model");
 // The showcase breathe peaks at exactly kTeal (lvl 255) and only ever scales
 // it down -- pin the peak so the budget claim survives a formula tweak.
 static_assert(channelSum(showcaseBreathe(kShowcaseBreathePeriodMs / 2)) ==
