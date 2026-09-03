@@ -110,7 +110,18 @@ fi
 say "delivery shape check: positive control OK -- '$MARKER' present in $SIM_ELF."
 
 # --- The assertion ----------------------------------------------------------
-delivery_hits="$(symbols_for "$DELIVERY_ELF" | grep "$MARKER" || true)"
+# Same could-not-check guard as the sim positive control above: an unreadable
+# or zero-byte/truncated DELIVERY_ELF must not silently read as "no marker
+# found" -> PASS. Capture the full symbol table first and require it be
+# non-empty before searching it for the marker.
+delivery_syms="$(symbols_for "$DELIVERY_ELF")"
+if [ -z "$delivery_syms" ]; then
+    echo "delivery shape check: COULD NOT CHECK -- '$NM' listed no symbols at all in" \
+         "'$DELIVERY_ELF'. Wrong nm for this architecture, a stripped binary, or a" \
+         "zero-byte/truncated build artifact." >&2
+    exit 2
+fi
+delivery_hits="$(printf '%s\n' "$delivery_syms" | grep "$MARKER" || true)"
 if [ -n "$delivery_hits" ]; then
     echo "::error title=SIM FEEDER IN THE DELIVERY IMAGE::'$MARKER' symbols are linked into" \
          "$DELIVERY_ELF. That build plays scripted 'armed' link2 frames with no board #1" \
