@@ -45,6 +45,28 @@ static_assert(kSynthConfig.valid(), "synth config: partial sum exceeds headroom"
 constexpr lights::LightConfig kLightConfig{};
 static_assert(kLightConfig.valid(), "light config: power budget or thresholds");
 
+#ifdef W17_SIM_LINK2_FEEDER
+// ---- Sim-image self-identification (sl:safety-5) ----------------------------
+// A bench image and the delivery image used to be indistinguishable on the
+// finished car: same strip, same sounds, and the sim feeder's scripted frames
+// say "armed". So the sim build lights one pixel MAGENTA, permanently.
+// Magenta is absent from the whole palette (LightRenderer.cpp) -- nothing else
+// on this strip ever shows red and blue together without green -- so one glance
+// answers "is this the delivery firmware?".
+//
+// It sits on the rain light's last pixel: dark except during ERS harvest, so
+// the marker costs the demo almost nothing. Written AFTER the compositor, so
+// it survives every layer including the failsafe hazard: the marker must not
+// be something a fault can hide. Pre-rendered through the same cap+gamma the
+// renderer applies, so it stays inside the power budget's model.
+constexpr uint8_t kSimMarkerPixel =
+    static_cast<uint8_t>(kLightConfig.rainLight.start + kLightConfig.rainLight.len - 1);
+static_assert(kLightConfig.rainLight.len > 0, "the sim marker needs a rain-light pixel");
+static_assert(kSimMarkerPixel < lights::kNumPixels, "sim marker pixel is off the strip");
+constexpr uint8_t kSimMarkerFull = lights::renderedDuty(255, kLightConfig.maxBrightness);
+constexpr lights::Rgb kSimMarkerColor{kSimMarkerFull, 0, kSimMarkerFull};
+#endif
+
 // ---- Core-1 (control) objects ----
 link2monitor::Link2Monitor monitor(kMonitorConfig);
 enginesim::EngineSim engine(kEngineConfig);
@@ -157,8 +179,19 @@ void setup() {
     Serial.begin(115200);
 #endif
 
+#ifndef W17_SIM_LINK2_FEEDER
     // link2 in from board #1 on UART2 (RX only; TX reserved for future ack).
     Serial2.begin(115200, SERIAL_8N1, pinmap::kLink2UartRxPin, /*txPin=*/-1);
+#else
+    // MUTUAL EXCLUSION (sl:safety-5): the sim image never opens the real link2
+    // UART, so a scripted frame and a real one can never interleave into one
+    // nonsense state. The RX pin is left unconfigured -- the strongest form of
+    // "this build does not listen to board #1". See the marker above for the
+    // other half: telling the two images apart on the finished car.
+    W17_UART0_PRINTF(
+        "[sim] SIMULATION IMAGE (esp32dev_sim): scripted link2 frames, real UART2 NOT read.\n"
+        "[sim] One magenta pixel marks this build. Re-flash esp32dev before the car ships.\n");
+#endif
 
     // Audio output startup (SLR-3): drive the I2S bring-up and audio-task
     // creation through the tested sequencing. On any failure the driver is torn
@@ -217,14 +250,17 @@ void setup() {
 void loop() {
     const uint32_t nowMs = millis();
 
+#ifndef W17_SIM_LINK2_FEEDER
     // ---- Drain the link2 UART every pass (never let bytes back up). ----
     while (Serial2.available() > 0) {
         monitor.feedByte(static_cast<uint8_t>(Serial2.read()), nowMs);
     }
+#endif
 
 #ifdef W17_SIM_LINK2_FEEDER
     // Standalone bench demo: inject scripted frames through the same monitor
-    // path the UART uses.
+    // path the UART uses. This is the ONLY frame source in this build
+    // (sl:safety-5) -- the real UART is not opened, let alone drained.
     {
         static uint8_t simFrame[link2::kFrameLen];
         const size_t n = simfeeder::tick(nowMs, simFrame);
@@ -274,6 +310,9 @@ void loop() {
         // machine, never re-derive it from `armed`).
         lightRenderer.render(monitor.state(), monitor.status(), engine.engine().ignition, nowMs,
                              px);
+#ifdef W17_SIM_LINK2_FEEDER
+        px[kSimMarkerPixel] = kSimMarkerColor; // after every layer, hazard included
+#endif
         for (uint8_t i = 0; i < lights::kNumPixels; ++i) {
             strip.setPixel(i, px[i].r, px[i].g, px[i].b);
         }

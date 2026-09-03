@@ -35,6 +35,15 @@ jobs:
       - name: Build firmware (Wokwi sim variant)
         run: pio run -e esp32dev_sim
 
+      # Delivery-shape guard (sl:safety-5). platformio.ini and
+      # SimLink2Feeder.hpp both promise the sim feeder "vanishes from the real
+      # firmware"; this asserts it over the linked ELF instead of asking CI to
+      # take a comment's word for it. Runs after BOTH builds because the sim
+      # image is the script's positive control: if the marker is missing there
+      # too, the run is "could not check" (exit 2), never a pass.
+      - name: Delivery image shape (no sim feeder in esp32dev)
+        run: bash tools/delivery_shape_check.sh
+
   # link2 drift guard (audit R06). `lib/link2/` here is a VERBATIM COPY of the
   # shared subset of w17-control-fw's `lib/link2/` — control-fw owns the protocol,
   # this board is only the receiver. The copy is permanent by decision
