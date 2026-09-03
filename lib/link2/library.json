@@ -1,10 +1,7 @@
 {
   "name": "link2",
   "version": "0.1.0",
-  "description": "Framed vehicle-state message to the sound/light ESP32 #2. Pure, self-contained (liftable into the board-#2 project wholesale); only Link2Sender touches hal.",
+  "description": "Framed vehicle-state message to the sound/light ESP32 #2. The SHARED subset (Link2Frame/Link2Codec) is pure and dependency-free, which is what makes it liftable into the board-#2 project wholesale; only the control-side Link2Sender -- deliberately NOT part of the copy -- includes hal/IByteSink.hpp, and PlatformIO's LDF resolves that from the include itself.",
   "frameworks": "*",
-  "platforms": "*",
-  "dependencies": {
-    "hal": "*"
-  }
+  "platforms": "*"
 }

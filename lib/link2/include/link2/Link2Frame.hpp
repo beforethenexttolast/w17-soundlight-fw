@@ -10,8 +10,13 @@
 //   - crc8: poly 0xD5, computed over [length + payload] (start byte excluded).
 //   - Receivers MUST hard-reject a length byte they don't support as soon as
 //     it arrives, and MUST treat "no CRC-valid frame for 500 ms" as link loss
-//     (engine to idle, hazard blink) -- on a one-way link a cut wire is
-//     otherwise indistinguishable from "last state persists".
+//     and fall back to their OWN documented safe state -- on a one-way link a
+//     cut wire is otherwise indistinguishable from "last state persists".
+//     The protocol does not dictate that state; board #2 (w17-soundlight-fw)
+//     implements it as a per-field projection that zeroes the commands and
+//     asserts failsafe, which leaves the engine SILENT (not idling: its
+//     ignition authority is armed || showcase, and both are cleared) under an
+//     all-amber hazard blink.
 //
 // Payload v2 (all multi-byte fields little-endian):
 //   [0] version = 2
