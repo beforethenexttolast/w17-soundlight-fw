@@ -155,9 +155,13 @@ struct LightConfig {
     // frame's steeringPercent) with hysteresis + minimum-on so a flick still
     // completes one blink. The minimum-on window is one indicatorPeriodMs
     // measured from the latch's rising edge (LightRenderer.cpp): the blink is
-    // free-running, so any window that long contains a whole lit half-cycle
-    // wherever it starts. It applies to SELF-CANCEL only -- steering hard
-    // the other way is a deliberate new gesture and swaps sides at once.
+    // free-running (phase-locked to nowMs, not to the latch), so the window
+    // always contains indicatorPeriodMs/2 of lit time (330 ms at the
+    // default), in at most two separate runs -- the shortest guaranteed
+    // CONTINUOUS flash is indicatorPeriodMs/4 (165 ms at the default,
+    // test-pinned in test_lights). It applies to SELF-CANCEL only --
+    // steering hard the other way is a deliberate new gesture and swaps
+    // sides at once.
     int8_t indicatorOnPercent = 40;
     int8_t indicatorOffPercent = 20;
 
@@ -207,8 +211,10 @@ struct LightConfig {
     constexpr bool valid() const {
         // Estimate worst case: all pixels amber (R+G) at the cap, measured in
         // POST-GAMMA duty. The pre-gamma model this replaced (2*20*cap/255)
-        // over-counted the default cap by ~5x -- 510 mA claimed against 180 mA
-        // real -- which made the budget check nearly vacuous (sl:safety-1).
+        // over-counted its own two-primary worst case by 2.8x (510 mA vs
+        // 180 mA), and the actual all-amber hazard draw by ~5x (510 mA vs
+        // ~104 mA post-gamma) -- which made the budget check nearly vacuous
+        // (sl:safety-1).
         //
         // Still a true upper bound for any palette: gamma is convex and
         // increasing, so among colors whose pre-gamma channel sum is at most

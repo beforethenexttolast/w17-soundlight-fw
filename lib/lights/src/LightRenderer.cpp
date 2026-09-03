@@ -362,10 +362,16 @@ void LightRenderer::render(const link2::VehicleState& state, link2monitor::LinkS
     // correctness-1: the blink is a free-running square wave, so a 240 ms
     // flick that happened to land in a dark half-cycle latched on and
     // self-cancelled again without ever lighting a pixel. The latch now
-    // survives one full indicatorPeriodMs from its rising edge, and any
-    // window that long contains a complete lit half-cycle no matter where it
-    // starts (worst case: the flick begins 1 ms before an on-half ends, and
-    // the NEXT on-half lands inside the window with 1 ms to spare).
+    // survives one full indicatorPeriodMs from its rising edge. The blink
+    // stays phase-locked to nowMs (not to the latch), so that window always
+    // contains indicatorPeriodMs/2 of lit time (330 ms at the default), in
+    // at most two separate runs -- it does NOT guarantee one contiguous
+    // half-cycle. The shortest guaranteed CONTINUOUS flash is
+    // indicatorPeriodMs/4 (165 ms at the default; worst case is a latch
+    // rising edge at phase indicatorPeriodMs/4, splitting the lit time into
+    // two 165 ms runs either side of a 330 ms dark gap). test_lights pins
+    // both the 330 ms total and the 165 ms worst-case contiguous run over
+    // every start phase.
     //
     // Deliberately self-cancel only. Steering hard the other way still swaps
     // sides immediately -- that is a new gesture, not an expired one, and

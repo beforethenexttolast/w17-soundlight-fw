@@ -81,9 +81,12 @@ void test_cap_is_applied_before_gamma_not_after() {
     // 255 * 110/255 = 110 -- so the two orders are not a wording detail.
     TEST_ASSERT_TRUE(lights::renderedDuty(255, cap) < 110);
 
-    // The pre-gamma budget model this replaced over-counted ~5x: 2*20*110/255
-    // = 17 mA/LED (510 mA over the strip) against the gamma-aware
-    // 2*20*40/255 = 6 mA/LED (180 mA).
+    // The pre-gamma budget model this replaced over-counted its own
+    // two-primary worst case by 2.8x: 2*20*110/255 = 17 mA/LED (510 mA over
+    // the strip) against the gamma-aware 2*20*40/255 = 6 mA/LED (180 mA) --
+    // and it over-counted the actual all-amber hazard draw (kAmber =
+    // {255,90,0}, both channels through cap+gamma: 510 mA against
+    // ~104 mA post-gamma) by ~5x.
     TEST_ASSERT_EQUAL_UINT32(17u, (2u * 20u * cap) / 255u);
     TEST_ASSERT_EQUAL_UINT32(6u, (2u * 20u * lights::renderedDuty(255, cap)) / 255u);
 }
@@ -311,6 +314,32 @@ uint32_t litMsDuringFlick(int8_t steerPeak, const lights::Segment& seg, uint32_t
     return lit;
 }
 
+// A single-sample flick at `startMs` (enough to cross the on-threshold and
+// latch -- the latch then holds regardless of steering for a full
+// indicatorPeriodMs from that rising edge), scanning the WHOLE minimum-on
+// window and returning the longest run of CONSECUTIVE 1 ms lit samples --
+// the number the "shortest guaranteed continuous flash" comment claims,
+// checked against the real renderer rather than a model of it.
+uint32_t longestLitRunDuringFlick(int8_t steerPeak, const lights::Segment& seg,
+                                   uint32_t startMs) {
+    LightRenderer r;
+    Rgb px[kNumPixels];
+    VehicleState s = upState();
+    uint32_t best = 0;
+    uint32_t run = 0;
+    for (uint32_t t = startMs; t < startMs + cfg.indicatorPeriodMs; ++t) {
+        s.steeringPercent = (t == startMs) ? steerPeak : 0;
+        r.render(s, light_status::Up, kIgnOff, t, px);
+        if (!(segFirst(px, seg) == (Rgb{0, 0, 0}))) {
+            ++run;
+            if (run > best) best = run;
+        } else {
+            run = 0;
+        }
+    }
+    return best;
+}
+
 } // namespace
 
 // correctness-1: LightRenderer.hpp promised "minimum-on so a flick still
@@ -321,9 +350,12 @@ uint32_t litMsDuringFlick(int8_t steerPeak, const lights::Segment& seg, uint32_t
 //
 // Checked at every interesting phase offset, both sides (the sim feeder's
 // triangle() never goes negative, so the LEFT indicator had neither a demo
-// nor a test before this): whatever the phase, one full lit half-cycle
-// (indicatorPeriodMs / 2, minus the 1 ms the sampling grid can clip) falls
-// inside the minimum-on window.
+// nor a test before this): whatever the phase, the minimum-on window (one
+// indicatorPeriodMs) always contains indicatorPeriodMs/2 of TOTAL lit time
+// (minus the 1 ms the sampling grid can clip). That total can land in two
+// separate runs rather than one contiguous half-cycle --
+// test_indicator_minimum_on_worst_case_contiguous_run below pins the
+// shortest guaranteed CONTINUOUS flash instead (indicatorPeriodMs/4).
 void test_indicator_flick_still_completes_one_blink() {
     const uint32_t halfCycle = cfg.indicatorPeriodMs / 2u;
     const uint32_t kStarts[] = {0, 100, 329, 330, 500, 659};
@@ -350,6 +382,27 @@ void test_indicator_flick_still_completes_one_blink() {
     r.render(s, light_status::Up, kIgnOff, 330 + cfg.indicatorPeriodMs, px); // cancels here
     r.render(s, light_status::Up, kIgnOff, 1320, px);                        // 1320 % 660 = 0
     TEST_ASSERT_TRUE(segFirst(px, cfg.rightIndicator) == (Rgb{0, 0, 0}));
+}
+
+// Pins the sentence review finding sl:correctness-1/timing corrected: the
+// minimum-on window guarantees indicatorPeriodMs/2 of TOTAL lit time, but
+// the shortest guaranteed CONTINUOUS flash is only indicatorPeriodMs/4 (a
+// window starting mid-on-phase splits the lit time into two runs either
+// side of a full dark half-cycle). Sweep every start phase against the real
+// renderer: the bound must hold everywhere, AND be tight -- some phase must
+// actually hit exactly indicatorPeriodMs/4, or "the shortest guaranteed
+// flash is 165 ms" would be a safe-but-loose estimate rather than the true
+// worst case.
+void test_indicator_minimum_on_worst_case_contiguous_run_is_quarter_period() {
+    const uint32_t period = cfg.indicatorPeriodMs;
+    const uint32_t quarterPeriod = period / 4u;
+    uint32_t worst = period; // shrinks to the true minimum below
+    for (uint32_t start = 0; start < period; ++start) {
+        const uint32_t runRight = longestLitRunDuringFlick(100, cfg.rightIndicator, start);
+        TEST_ASSERT_GREATER_OR_EQUAL_UINT32(quarterPeriod, runRight);
+        if (runRight < worst) worst = runRight;
+    }
+    TEST_ASSERT_EQUAL_UINT32(quarterPeriod, worst);
 }
 
 // The minimum-on window must not out-rank a deliberate opposite lock: a
@@ -1005,6 +1058,7 @@ int main(int, char**) {
     RUN_TEST(test_drs_tell_never_masks_brake_light);
     RUN_TEST(test_indicator_hysteresis_and_selfcancel);
     RUN_TEST(test_indicator_flick_still_completes_one_blink);
+    RUN_TEST(test_indicator_minimum_on_worst_case_contiguous_run_is_quarter_period);
     RUN_TEST(test_opposite_lock_swaps_sides_inside_the_minimum_on_window);
     RUN_TEST(test_rain_light_flashes_only_while_harvesting_in_ers_mode);
     RUN_TEST(test_rain_light_ignores_deploy_only);
