@@ -46,9 +46,19 @@ pin header.
   fork; protocol changes happen there first). `encodeFrame` is kept for the sim feeder.
 - `lib/link2monitor` — staleness watchdog + per-field effective state + LinkStatus
   (NeverConnected / Up / Lost).
+- `lib/audiodecision` — pure audio-task decisions shared verbatim by `src/main.cpp` and the
+  native tests: `synthVolumeFor` (ignition → base volume), `normalizeSoundProfile` (link2 v2
+  `soundProfile` byte, reserved values fold to V10), `applyOperatorVolume` (composes the
+  link2 v2 `volume` byte), and the audio-heartbeat dead-man boundary.
+- `lib/audiostartup` — pure I2S startup sequencing (install → pins → DMA clear → task) with
+  best-effort cleanup on a post-install failure; the real ESP-IDF calls live behind an `Ops`
+  adapter.
+- `lib/config` — header-only `PinMap.hpp`: this board's own GPIO assignments, independent of
+  board #1's map.
 - `lib/enginesim` — virtual engine: rpm inertia, gear-shift blips, ignition state
-  machine (Off/Cranking/Running; keys on `armed || showcase` — the armed path is the
-  original behavior), rev limiter, overrun crackle window. Also home of `ShowScript`: the
+  machine (Off/Cranking/Running; keys on `armed || showcase`, where `showcase` is the link2
+  v2 `modeFlags` bit0 — the armed path is the original behavior), rev limiter, overrun
+  crackle window. Also home of `ShowScript`: the
   showcase idle script, a pure function of absolute time (deterministic; limiter/overrun
   unreachable by static_assert against the shipped config) — it generates throttle shapes
   ONLY under the showcase authority predicate and is NOT a local demo trigger: with no
@@ -57,8 +67,16 @@ pin header.
   firing frequency (default 5 firings/rev = V10 flavor, range 3500–15000 rpm — chosen so
   the fundamental sits in a small speaker's band), per-rev AM, throttle-correlated noise,
   pitch-tracking ERS whine, param smoothing. Deterministic (seeded LFSR noise). Named
-  voice profiles in `SynthProfiles.hpp` (V10 = compile-time default, V6 turbo-hybrid);
-  the selection mechanism is an open owner decision — do not add one unilaterally.
+  voice profiles in `SynthProfiles.hpp` (V10 = boot default = wire 0, V6 turbo-hybrid = wire
+  1), selected at runtime by the link2 v2 `soundProfile` byte (owner decision 15,
+  2026-08-16): `audiodecision::normalizeSoundProfile` folds any reserved value to V10 on the
+  control core, two bits of the packed synth word carry it across cores, and
+  `EngineSynth::setVoiceProfile` applies it on the audio task. Operator volume (link2 v2
+  `volume` byte, 0..100, 0 = true silence) composes the same way via
+  `audiodecision::applyOperatorVolume` (`stateVolume * op / 100`, then the synth's own
+  `sample * vol / 255` gain stage); failsafe/staleness always wins (`Ignition::Off` drives
+  stateVolume to 0). No NVS or build flag on this board — board #1 persists both
+  (`sound.profile` / `sound.volume`).
 - `lib/lights` — pure compositor: base (halo incl. ignition-on animation and the showcase
   teal breathe with lit tail, distinct from the never-connected grace breathe) → DRS tell →
   brake/indicators/rain → low-battery → failsafe hazard override; never-connected shows a
