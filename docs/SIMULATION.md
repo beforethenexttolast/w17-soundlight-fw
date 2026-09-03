@@ -51,3 +51,11 @@ blips). SHOW_LOWBATT's silent engine plus a red pulse with no hazard is the deli
       every quiet state lives below that. Judge the dim states (disarmed halo, red tail, showcase
       breathe floor — all set to `kMinVisibleDuty`) in daylight and retune if they vanish; raise
       the cap only after checking the UBEC headroom.
+- [ ] **Trim the TX before judging the indicators.** Today's truth (correctness-1's other half,
+      NOT fixed on this branch — nothing self-cancels a trimmed-off-centre stick): the indicator
+      logic only self-cancels once `|steer| < indicatorOffPercent` (20). A physical steering trim
+      that leaves the centred stick reporting `steeringPercent` anywhere in `[20, 40)` (below
+      `indicatorOnPercent` = 40, so it never re-latches, but at or above `indicatorOffPercent`, so
+      an already-latched indicator never releases) makes that indicator blink forever with the
+      wheel centred. Set the TX trim so the centred stick reads below `indicatorOffPercent` before
+      judging the indicator behaviour on the bench — `[bench-TBD]`.
