@@ -170,6 +170,48 @@ void setup() {
     reportAudioStartup(audioResult, audioOps);
 
     strip.begin();
+
+    // ---- Core-1 loop watchdog (sl:safety-2, owner ruling OD-12 Q2(a)) ----
+    //
+    // WHAT IT FIXES. The audio side already has a dead-man: params not
+    // refreshed for kAudioDeadmanMs and the synth ramps to silence. The LIGHT
+    // side has none -- a wedged loop() simply stops calling strip.show(), and
+    // WS2812s hold their last frame forever. So before this, a hung control
+    // loop went quiet and then sat there showing a perfectly healthy-looking
+    // armed teal (or a frozen solid amber), which is the worst possible
+    // failure: silent, still, and reassuring. Board #1 has carried a loop
+    // TWDT since remediation R5-a; this board was the asymmetric one.
+    //
+    // WHAT THIS CALL DOES. enableLoopWDT() (esp32-hal.h:111,
+    // esp32-hal-misc.c:91-99 of the pinned core) subscribes the Arduino
+    // loopTask -- the task this function runs on -- to the ONE global TWDT the
+    // framework already starts at boot. The core resets it once per loop pass
+    // for us (cores/esp32/main.cpp:47-49), so there is no feed call to forget
+    // here and no second watchdog.
+    //
+    // THE DEADLINE IS THE FRAMEWORK'S, NOT BOARD #1's. sdkconfig ships
+    // CONFIG_ESP_TASK_WDT_TIMEOUT_S=5 with CONFIG_ESP_TASK_WDT_PANIC=y, so a
+    // wedged loop panics and reboots after ~5 s, against board #1's 2 s.
+    // Matching 2 s would mean esp_task_wdt_init(2, true), which UPDATES the
+    // single global instance and so also moves the core-0 idle task to a 2 s
+    // deadline -- on this board core 0 is the audio pump, and whether it ever
+    // starves IDLE0 for 2 s is unmeasurable until the bench (A2 NOT EXECUTED).
+    // Taking the framework default adds protection without adding an
+    // unvalidated reset risk. [bench-TBD]: an owner call once Phase B can
+    // measure it.
+    //
+    // SYMPTOM LEGEND (so a self-reset is not mistaken for a radio failsafe):
+    //   lights blink OFF entirely and the engine re-cranks from silence
+    //     = board #2 rebooted itself (this watchdog). The strip is cleared on
+    //       boot (Esp32NeoPixelStrip.cpp:8-12) and the monitor re-enters
+    //       NeverConnected -> Up, so recovery is clean and obvious.
+    //   lights go AMBER HAZARD and the engine falls silent, strip still alive
+    //     = link2 staleness / failsafe. Board #2 is fine; board #1 or the
+    //       harness is not.
+    // Audio leads either way: the 500 ms dead-man mutes long before the ~5 s
+    // watchdog fires, so "went quiet, then everything blinked off" is one
+    // event, not two.
+    enableLoopWDT();
 }
 
 void loop() {
