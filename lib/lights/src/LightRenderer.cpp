@@ -83,25 +83,11 @@ static_assert(channelSum(showcaseBreathe(kShowcaseBreathePeriodMs / 2)) ==
 static_assert(channelSum(showcaseBreathe(0)) <= channelSum(kTeal),
               "showcase breathe floor exceeds its own peak");
 
-// Gamma-2.2 LUT (WS2812 look linear-perceptual). Built once.
-struct GammaLut {
-    uint8_t v[256];
-    GammaLut() {
-        for (int i = 0; i < 256; ++i) {
-            double g = 255.0 * __builtin_pow(i / 255.0, 2.2);
-            int val = static_cast<int>(g + 0.5);
-            v[i] = static_cast<uint8_t>(val < 0 ? 0 : (val > 255 ? 255 : val));
-        }
-    }
-};
-const GammaLut kGamma;
-
+// Cap BEFORE gamma -- see LightConfig::maxBrightness for why the order is
+// what it is and what it costs. The curve itself is the constexpr LUT in the
+// header (one copy, shared with the power budget in valid()).
 Rgb applyBrightnessAndGamma(Rgb c, uint8_t maxBrightness) {
-    // Scale by the cap, then gamma-correct.
-    auto ch = [&](uint8_t x) {
-        uint16_t scaled = static_cast<uint16_t>(x) * maxBrightness / 255;
-        return kGamma.v[scaled];
-    };
+    auto ch = [&](uint8_t x) { return renderedDuty(x, maxBrightness); };
     return Rgb{ch(c.r), ch(c.g), ch(c.b)};
 }
 

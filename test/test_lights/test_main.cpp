@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <cmath>
+
 #include "lights/LightRenderer.hpp"
 
 using light_status = link2monitor::LinkStatus;
@@ -49,6 +51,41 @@ void test_config_valid_and_within_power_budget() {
     tooBright.maxBrightness = 255;
     // 30 LEDs amber at full would exceed the 900mA budget -> invalid.
     TEST_ASSERT_FALSE(tooBright.valid());
+}
+
+// The gamma curve moved from a runtime table built with __builtin_pow into a
+// constexpr LUT in the header (one copy, shared with the power budget). Pin
+// every entry against the libm reference the old table used, so "the numbers
+// did not move" is a checked fact rather than a claim in a commit message.
+void test_gamma_lut_matches_the_libm_reference() {
+    for (int i = 0; i < 256; ++i) {
+        const double g = 255.0 * std::pow(i / 255.0, 2.2);
+        const int expected = static_cast<int>(g + 0.5);
+        TEST_ASSERT_EQUAL_INT(expected, static_cast<int>(lights::kGamma.v[i]));
+    }
+}
+
+// sl:safety-1 (1): the cap is applied BEFORE gamma, which is why 110 reads as
+// "~43%" but drives a full channel at only 40/255. Pin the arithmetic the
+// header comments and docs/SIMULATION.md now state, so a future edit cannot
+// quietly make the prose false again.
+void test_cap_is_applied_before_gamma_not_after() {
+    const uint8_t cap = LightConfig{}.maxBrightness;
+    TEST_ASSERT_EQUAL_UINT8(110, cap);
+
+    // Cap-then-gamma (what the renderer does): gamma(255 * 110/255) = gamma(110).
+    TEST_ASSERT_EQUAL_UINT8(lights::kGamma.v[110], lights::renderedDuty(255, cap));
+    TEST_ASSERT_EQUAL_UINT8(40, lights::renderedDuty(255, cap));
+
+    // Gamma-then-cap (what the header used to claim) would be far brighter --
+    // 255 * 110/255 = 110 -- so the two orders are not a wording detail.
+    TEST_ASSERT_TRUE(lights::renderedDuty(255, cap) < 110);
+
+    // The pre-gamma budget model this replaced over-counted ~5x: 2*20*110/255
+    // = 17 mA/LED (510 mA over the strip) against the gamma-aware
+    // 2*20*40/255 = 6 mA/LED (180 mA).
+    TEST_ASSERT_EQUAL_UINT32(17u, (2u * 20u * cap) / 255u);
+    TEST_ASSERT_EQUAL_UINT32(6u, (2u * 20u * lights::renderedDuty(255, cap)) / 255u);
 }
 
 void test_failsafe_hazard_overrides_everything() {
@@ -673,6 +710,8 @@ void test_showcase_crank_comet_and_catch_flash_settle_into_breathe() {
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_config_valid_and_within_power_budget);
+    RUN_TEST(test_gamma_lut_matches_the_libm_reference);
+    RUN_TEST(test_cap_is_applied_before_gamma_not_after);
     RUN_TEST(test_failsafe_hazard_overrides_everything);
     RUN_TEST(test_link_lost_forces_hazard_even_if_frame_not_failsafe);
     RUN_TEST(test_never_connected_is_calm_not_hazard);

@@ -46,5 +46,8 @@ blips). SHOW_LOWBATT's silent engine plus a red pulse with no hazard is the deli
       the V10 flavor / partial weighting / rpm range are all config knobs in
       `EngineSynthConfig`. If synthesis disappoints, the `ISampleSource` seam accepts a PCM
       sample renderer with no changes above it.
-- [ ] Brightness cap (`LightConfig::maxBrightness`, ~43%) keeps 30 LEDs within the current
-      budget even on the all-amber hazard; raise only after checking the UBEC headroom.
+- [ ] Brightness cap (`LightConfig::maxBrightness` = 110) is applied **before** gamma, so it is
+      ~43% *perceptual* but only ~16% *electrical* — a full channel is driven at 40/255 duty, and
+      every quiet state lives below that. Judge the dim states (disarmed halo, red tail, showcase
+      breathe floor — all set to `kMinVisibleDuty`) in daylight and retune if they vanish; raise
+      the cap only after checking the UBEC headroom.
