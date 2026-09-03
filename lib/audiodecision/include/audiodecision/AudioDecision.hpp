@@ -22,6 +22,13 @@ namespace audiodecision {
 // inline decision exactly. Integer promotion (uint8_t throttle -> int),
 // truncating division, and the final uint8_t narrowing are preserved verbatim:
 // at throttlePercent 100 the result saturates at 255.
+//
+// PRECONDITION: throttlePercent <= 100. This function is NOT total over its
+// argument type and deliberately does not clamp -- the receiver-side bound
+// lives once at EngineSim::clampThrottle, where the wire value is adopted
+// (sl:correctness-3). 101 here yields 90 + 101*165/100 = 256, which narrows
+// to 0: bit-exact silence at what the frame calls full throttle. Pinned in
+// test_audiodecision so the precondition cannot rot into a surprise.
 constexpr uint8_t synthVolumeFor(enginesim::Ignition ignition, uint8_t throttlePercent) {
     if (ignition == enginesim::Ignition::Off) return 0;
     if (ignition == enginesim::Ignition::Cranking) return 70;

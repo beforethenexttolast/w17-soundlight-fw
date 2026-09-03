@@ -110,6 +110,11 @@ public:
 
     void update(uint32_t nowMs, const link2::VehicleState& state);
 
+    // Clamps a raw wire throttlePercent into the 0..100 the rest of the
+    // firmware assumes. Applied once at update()'s ingress; exposed so the
+    // bound itself is testable (sl:correctness-3).
+    static uint8_t clampThrottle(int8_t wireThrottlePercent);
+
     const EngineState& engine() const { return out_; }
 
     // Signed RPM-inertia step: how far to move rpm toward the target this tick,
@@ -130,7 +135,10 @@ public:
 private:
     static constexpr int64_t kInertiaScale = 1000; // rate is per-mille per ms
 
-    uint16_t targetRpm(const link2::VehicleState& state) const;
+    // Takes the ALREADY-CLAMPED throttle (clampThrottle), not the raw frame:
+    // the range bound belongs at update()'s ingress, not in each consumer
+    // (sl:correctness-3).
+    uint16_t targetRpm(uint8_t throttlePercent) const;
 
     EngineSimConfig config_;
     EngineState out_;

@@ -555,6 +555,61 @@ void test_ignition_authority_truth_table() {
     }
 }
 
+// --- sl:correctness-3: the receiver-side throttle bound ----------------------
+//
+// link2 documents throttlePercent as an int8 in -100..100 and board #2 is a
+// receiver, so it bounds what arrives. Before this, wire values 101..127
+// passed straight through (128..255 already decode negative and were
+// clamped) and 101 reached audiodecision::synthVolumeFor as
+// 90 + 101*165/100 = 256, narrowed to uint8_t = 0: bit-exact SILENCE at what
+// the frame calls full throttle, plus a targetRpm past the redline.
+
+void test_clamp_throttle_bounds_the_wire_value() {
+    TEST_ASSERT_EQUAL_UINT8(0, EngineSim::clampThrottle(-128));
+    TEST_ASSERT_EQUAL_UINT8(0, EngineSim::clampThrottle(-1));
+    TEST_ASSERT_EQUAL_UINT8(0, EngineSim::clampThrottle(0));
+    TEST_ASSERT_EQUAL_UINT8(50, EngineSim::clampThrottle(50));
+    TEST_ASSERT_EQUAL_UINT8(100, EngineSim::clampThrottle(100));
+    TEST_ASSERT_EQUAL_UINT8(100, EngineSim::clampThrottle(101));
+    TEST_ASSERT_EQUAL_UINT8(100, EngineSim::clampThrottle(127)); // top of int8
+}
+
+void test_throttle_101_behaves_exactly_like_100() {
+    // Two engines fed identical frames except for the out-of-range throttle:
+    // every observable must match, tick for tick.
+    EngineSim a;
+    EngineSim b;
+    VehicleState sa = armedAt(100);
+    VehicleState sb = armedAt(101); // the reachable bad window is 101..127
+
+    for (uint32_t t = 0; t <= 4000; t += 20) {
+        a.update(t, sa);
+        b.update(t, sb);
+        TEST_ASSERT_EQUAL_UINT16(a.engine().engineRpm, b.engine().engineRpm);
+        TEST_ASSERT_EQUAL_UINT8(a.engine().throttlePercent, b.engine().throttlePercent);
+        TEST_ASSERT_EQUAL_INT(static_cast<int>(a.engine().ignition),
+                              static_cast<int>(b.engine().ignition));
+        TEST_ASSERT_EQUAL_INT(a.engine().limiterActive, b.engine().limiterActive);
+        TEST_ASSERT_EQUAL_INT(a.engine().overrunActive, b.engine().overrunActive);
+    }
+    // ...and the value that leaves the sim is inside the documented range,
+    // which is the whole point: synthVolumeFor saturates at 255 for 100 and
+    // wrapped to 0 for 101.
+    TEST_ASSERT_EQUAL_UINT8(100, b.engine().throttlePercent);
+}
+
+void test_out_of_range_throttle_never_targets_past_the_redline() {
+    EngineSim e;
+    VehicleState s = armedAt(127);
+    for (uint32_t t = 0; t <= 8000; t += 20) {
+        e.update(t, s);
+        // engineRpm carries the idle wobble and blips on top of the target;
+        // the bound that matters is that the TARGET is maxRpm, so the
+        // settled value cannot run away above it by more than the wobble.
+        TEST_ASSERT_TRUE(e.engine().engineRpm <= kDefaults.maxRpm + kDefaults.idleWobbleRpm);
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_off_when_disarmed);
@@ -581,5 +636,8 @@ int main(int, char**) {
     RUN_TEST(test_showcase_low_battery_ends_show_but_armed_path_warn_only);
     RUN_TEST(test_showcase_cleared_drops_to_off);
     RUN_TEST(test_ignition_authority_truth_table);
+    RUN_TEST(test_clamp_throttle_bounds_the_wire_value);
+    RUN_TEST(test_throttle_101_behaves_exactly_like_100);
+    RUN_TEST(test_out_of_range_throttle_never_targets_past_the_redline);
     return UNITY_END();
 }

@@ -278,9 +278,29 @@ void test_policy_status_dominates_byte_count() {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(WriteOutcome::ShortWrite), static_cast<int>(okShort));
 }
 
+// sl:correctness-3, the consequence half. synthVolumeFor's contract is
+// "0..100 in, 90..255 out"; it is not total over the int8 wire range, and
+// that is deliberate -- the bound belongs at the receiver's ingress
+// (EngineSim::clampThrottle), not repeated in every consumer. This test pins
+// BOTH halves: what an unclamped 101 would have done, and that the clamp
+// turns it into the intended full-throttle 255.
+void test_out_of_range_throttle_would_wrap_the_volume_to_silence() {
+    // 90 + 101*165/100 = 256, narrowed to uint8_t = 0. Bit-exact silence at
+    // "full throttle" -- the reason the clamp exists.
+    TEST_ASSERT_EQUAL_UINT8(0, synthVolumeFor(Ignition::Running, 101));
+    TEST_ASSERT_EQUAL_UINT8(255, synthVolumeFor(Ignition::Running, 100));
+
+    // Fed through the receiver-side clamp, the wire value behaves.
+    TEST_ASSERT_EQUAL_UINT8(
+        255, synthVolumeFor(Ignition::Running, enginesim::EngineSim::clampThrottle(101)));
+    TEST_ASSERT_EQUAL_UINT8(
+        255, synthVolumeFor(Ignition::Running, enginesim::EngineSim::clampThrottle(127)));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_volume_off_is_silent);
+    RUN_TEST(test_out_of_range_throttle_would_wrap_the_volume_to_silence);
     RUN_TEST(test_volume_cranking_is_fixed);
     RUN_TEST(test_volume_running_min_throttle);
     RUN_TEST(test_volume_running_half_throttle_integer_math);

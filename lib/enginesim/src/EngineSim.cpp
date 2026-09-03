@@ -6,17 +6,38 @@ namespace {
 constexpr uint32_t kMaxDtMs = 100; // stall clamp, same idea as ERS
 } // namespace
 
+// THE receiver-side throttle bound (sl:correctness-3). link2 carries
+// throttlePercent as an int8 documented -100..100 (docs/link2_protocol.md),
+// and this board is a receiver: it validates what arrives, it does not assume
+// the sender is well-behaved. Wire values 101..127 used to pass straight
+// through -- 128..255 already decode as negative and were clamped -- and
+// board #2 has no other range check on this field, so 101 reached
+// synthVolumeFor as 90 + 101*165/100 = 256, narrowed to uint8_t = 0:
+// bit-exact SILENCE at "full throttle", plus a targetRpm past the redline.
+//
+// Clamped ONCE here, at the point the receiver adopts the value, rather than
+// at each consumer: everything downstream (targetRpm, the overrun delta, the
+// idle wobble, the limiter gate, EngineState::throttlePercent and through it
+// the synth volume) reads the clamped copy. Board #1 clamping at the sender
+// is a separate w17-control-fw change and does not remove the need for this.
+uint8_t EngineSim::clampThrottle(int8_t wireThrottlePercent) {
+    if (wireThrottlePercent < 0) {
+        return 0;
+    }
+    return static_cast<uint8_t>(wireThrottlePercent > 100 ? 100 : wireThrottlePercent);
+}
+
 EngineSim::EngineSim(EngineSimConfig config) : config_(config) {
     rpm_ = config_.idleRpm;
 }
 
-uint16_t EngineSim::targetRpm(const link2::VehicleState& state) const {
+uint16_t EngineSim::targetRpm(uint8_t throttlePercent) const {
     // Map throttle 0..100 across idle..max. Throttle is already the
     // post-gearbox/post-ERS commanded value from board #1, so the engine
-    // note tracks the actual motor, not the raw stick.
+    // note tracks the actual motor, not the raw stick. Caller passes the
+    // clamped value (clampThrottle), so this can never target past maxRpm.
     const int32_t span = config_.maxRpm - config_.idleRpm;
-    const int32_t t = state.throttlePercent < 0 ? 0 : state.throttlePercent;
-    return static_cast<uint16_t>(config_.idleRpm + span * t / 100);
+    return static_cast<uint16_t>(config_.idleRpm + span * throttlePercent / 100);
 }
 
 void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
@@ -29,6 +50,9 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
     if (dtMs > kMaxDtMs) {
         dtMs = kMaxDtMs;
     }
+
+    // Ingress bound: nothing below this line reads state.throttlePercent.
+    const uint8_t throttle = clampThrottle(state.throttlePercent);
 
     // --- Ignition state machine (driven by the sound authority:
     // armed || showcase, with the showcase branch gated on !failsafe and
@@ -60,7 +84,7 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
 
     // --- Overrun crackle window: fast throttle drop from high rpm. ---
     if (everSeenState_ && ignition_ == Ignition::Running) {
-        const int drop = static_cast<int>(lastThrottle_) - static_cast<int>(state.throttlePercent);
+        const int drop = static_cast<int>(lastThrottle_) - static_cast<int>(throttle);
         const bool wasHigh = rpm_ >= config_.idleRpm +
                                         (config_.maxRpm - config_.idleRpm) *
                                             config_.overrunHighRpmPct / 100;
@@ -70,7 +94,7 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
         }
     }
 
-    lastThrottle_ = state.throttlePercent < 0 ? 0 : static_cast<uint8_t>(state.throttlePercent);
+    lastThrottle_ = throttle;
     lastGear_ = state.gear;
     everSeenState_ = true;
 
@@ -81,7 +105,7 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
     } else if (ignition_ == Ignition::Cranking) {
         target = config_.crankRpm;
     } else {
-        target = targetRpm(state);
+        target = targetRpm(throttle);
     }
 
     const int32_t gap = target - rpm_;
@@ -116,7 +140,7 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
         // throttle opens.
         wobblePhase_ = static_cast<uint16_t>((wobblePhase_ + dtMs) % 400);
         const int32_t tri = (wobblePhase_ < 200) ? (wobblePhase_ - 100) : (300 - wobblePhase_);
-        const int32_t idleness = 100 - (state.throttlePercent < 0 ? 0 : state.throttlePercent);
+        const int32_t idleness = 100 - static_cast<int32_t>(throttle);
         audible += tri * config_.idleWobbleRpm * idleness / (100 * 100);
     }
 
@@ -131,7 +155,7 @@ void EngineSim::update(uint32_t nowMs, const link2::VehicleState& state) {
             blipActive_ = false;
         }
     }
-    if (ignition_ == Ignition::Running && state.throttlePercent >= config_.limiterThrottlePct &&
+    if (ignition_ == Ignition::Running && throttle >= config_.limiterThrottlePct &&
         rpm_ >= config_.maxRpm - config_.limiterBandRpm) {
         out_.limiterActive = true;
     }
