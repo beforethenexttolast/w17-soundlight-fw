@@ -5,7 +5,7 @@ scripted link2 drive through the **real** assembler + monitor path — so the so
 run with no board #1 attached. Flash it, connect the MAX98357A + speaker and the WS2812
 strip, and open the serial monitor (115200) to watch the phase narration.
 
-## ~14 s demo loop
+## 21 s demo loop
 
 | t (s) | phase | sound | lights |
 |---|---|---|---|
@@ -16,10 +16,21 @@ strip, and open the serial monitor (115200) to watch the phase narration.
 | 9.5–11 | CORNERING | part-throttle | indicators sweep L/R |
 | 11–12 | DROPOUT | **engine to silence** | **amber hazard blink** (staleness → local failsafe) |
 | 12–14 | RECOVERED | engine returns | back to normal |
+| 14–15.5 | PARKED | engine winds down to silence | dim-white halo (disarmed; the contrast beat before the show) |
+| 15.5–19.5 | SHOWCASE | re-crank, then `ShowScript`'s seeded gentle idle blips over the burble | halo: slow teal breathe with the tail lit (link2 `modeFlags` bit0) |
+| 19.5–21 | SHOW_LOWBATT | engine falls silent | slow red halo pulse, **no hazard** (the frame stream stays alive and healthy) |
 
 The DROPOUT phase is the important one: the feeder emits **nothing** for 1 s, so the
 `Link2Monitor` crosses its 500 ms staleness threshold, projects the per-field failsafe state
 (engine silent, hazard lights), and then recovers cleanly on the next frame.
+
+PARKED, SHOWCASE and SHOW_LOWBATT are designed, not defects, so a bench operator should not
+file them as faults: only the 11–12 s DROPOUT is a fault (stale link ⇒ hazard). SHOWCASE
+sends the truthful `armed=0` / `throttlePercent=0` frame that a real showcase boot of board
+#1 puts on the wire (`modeFlags` bit0 set) — board #2 supplies the whole presentation
+locally (ignition keys on `armed || showcase`; `lib/enginesim`'s `ShowScript` adds the
+blips). SHOW_LOWBATT's silent engine plus a red pulse with no hazard is the deliberate
+"asking for the charger" ending: the link is healthy the whole time, so nothing is faulted.
 
 ## First-run bench checklist (low-confidence platform facts)
 
